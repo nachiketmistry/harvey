@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from sellbird.brain import Brain
 from sellbird.config import EmailRulesError, SellbirdConfig, compliance_of, load_email_rules
+from sellbird.geography import prospect_rank
 from sellbird.humanize import humanize, humanizer_enabled
 from sellbird.integrations.mail_provider import NATIVE_PROVIDERS
 from sellbird.models.campaign import Campaign, EmailStep
@@ -174,6 +175,11 @@ class Writer:
             if not prospects_with_email:
                 logger.info("Writer: No prospects at or above the minimum score.")
                 return
+
+        # Batches are capped and leftovers wait a cycle, so the order here is
+        # who gets written to (and sent) first: the earliest icp.geography
+        # entry they're in, then score. Everyone stays; the rest just wait.
+        prospects_with_email = await self._prioritise(prospects_with_email)
 
         # Batch prospects into campaign groups (by industry/title for relevance)
         batches = self._group_prospects(prospects_with_email)
@@ -625,6 +631,17 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         if len(steps) < 3:
             logger.warning(f"Writer: Expected 3 emails, got {len(steps)}.")
         return steps
+
+    async def _prioritise(self, prospects: list) -> list:
+        """Prospects by geography tier, then score; ties keep their order."""
+        ranks = {}
+        for p in prospects:
+            try:
+                ranks[p.id] = await prospect_rank(self.state, p, self.config)
+            except Exception as e:
+                logger.debug(f"Writer: geography rank failed for {p.id}: {e}")
+                ranks[p.id] = len(self.config.icp.geography or [])
+        return sorted(prospects, key=lambda p: (ranks[p.id], -(p.score or 0)))
 
     def _group_prospects(self, prospects: list) -> dict[str, list]:
         """Group prospects into campaign batches by industry/title combo."""

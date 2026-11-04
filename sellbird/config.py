@@ -63,6 +63,9 @@ class ICPConfig(BaseModel):
     industries: list[str]
     company_size: str
     titles: list[str]
+    # Ordered: earlier entries are written to (and sent) first, and a
+    # company outside every entry still counts, only last. See
+    # sellbird/geography.py for how an entry matches a company's location.
     geography: list[str]
     # Role keywords that indicate a company is in-market right now (a company
     # hiring a "Head of Growth" is buying growth tooling). Empty → falls back
