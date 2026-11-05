@@ -167,7 +167,7 @@ database, the logs and the dashboard token.
 | Guide | What's in it |
 |---|---|
 | [How Sellbird works](docs/how-it-works.md) | The heartbeat loop, the subscription budget, project structure and the ideas behind it |
-| [Signals and the prospecting pipeline](docs/signals-and-pipeline.md) | The 29 signals, cohorts, and the discover, profile, enrich and verify stages |
+| [Signals and the prospecting pipeline](docs/signals-and-pipeline.md) | The 30 signals, cohorts, and the discover, profile, enrich and verify stages |
 | [Skills and sub-agents](docs/skills-and-agents.md) | The editable sales playbooks and which agent uses which |
 | [Approval and sending](docs/approval-and-sending.md) | The Outbox, autopilot, office hours and email signatures |
 | [The dashboard and the data](docs/dashboard.md) | Every screen, how sign-in works, and how the data is stored |

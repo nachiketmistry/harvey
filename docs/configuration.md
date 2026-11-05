@@ -11,7 +11,7 @@ Two files, both plain text.
 ```yaml
 persona:      { name, company, role, email, tone }
 product:      { name, description, pricing, key_benefits, objection_responses, offer }
-icp:          { industries, titles, company_size, geography, hiring_signals, geo_coordinates }
+icp:          { industries, titles, company_size, geography, hiring_signals, site_mentions, geo_coordinates }
 channels:
   email:      { provider: gmail | microsoft | smtp | instantly, max_daily_sends, per_inbox_daily_cap,
                 require_approval, send_to_risky, min_write_score, max_bounce_rate, warmup, send_window, signature }

@@ -4,7 +4,7 @@
 
 This is the part that makes Sellbird different from a black box, and it is deliberately not skippable.
 
-Sellbird knows how to collect **29 signals** about a business. It does not collect any of them until you say so. On first run it *proposes* the catalog; you confirm, skip, or reject each one in the dashboard or from the terminal:
+Sellbird knows how to collect **30 signals** about a business. It does not collect any of them until you say so. On first run it *proposes* the catalog; you confirm, skip, or reject each one in the dashboard or from the terminal:
 
 ```bash
 sellbird signals                       # review the catalog
@@ -28,6 +28,7 @@ Every signal shows what it is in plain language, **what it costs**, and how many
 | | `BLOG_STALE` | Content marketing started and abandoned. |
 | | `SITE_PAGE_COUNT`, `TECH_STACK`, `BLOCKS_AI_CRAWLERS` | Size, platform, AI-search visibility. |
 | | `HIRING_ROLE` / `OPEN_ROLES` | What they're hiring for, and how many roles are open. When their site links a Greenhouse, Lever, Ashby or Workable board, Sellbird reads that board's public feed (one request): roles matching `icp.hiring_signals` (else `icp.titles`), with department, location, posting date and the posting's URL; when the board lists none, it records "not hiring" so a closed role stops counting. Otherwise it reads the careers page for the same roles, and records "not hiring" the same way when none are there. Set `hiring_signals` to the roles that mean they're buying: the `titles` fallback names who you email, so "CEO" only matches a CEO opening (never "Assistant to the CEO"), which is rarely the signal you want. |
+| | `SITE_MENTIONS` | Which of your `icp.site_mentions` phrases their own site names: a product they run, a partnership, a service they sell (`["Splunk", "managed SOC"]`). Reads the homepage, About and a services or partners page, logo alt text included, and counts as a sector match in the fit score. The way to qualify companies whose category no directory lists. |
 | | `YC_BACKED`, `ACCELERATOR`, `FUNDING_ROUND` | A startup, as its own site says: YC or another accelerator (with the batch or cohort), or a raise it announced (round, amount, date). |
 | **People** | `CONTACT_FOUND`, `DECISION_MAKER_TITLE`, `LIKELY_OWNER`, `REGISTRY_VERIFIED` | Who decides, and whether they own the place. |
 | **Contact** | `EMAIL_PATTERN`, `EMAIL_STATUS`, `CONTACT_FORM_URL` | Whether you can actually reach them. |
