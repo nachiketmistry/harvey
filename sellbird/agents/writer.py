@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from sellbird.brain import Brain
 from sellbird.config import EmailRulesError, SellbirdConfig, compliance_of, load_email_rules
-from sellbird.geography import prospect_rank
+from sellbird.geography import prospect_outside, prospect_rank
 from sellbird.humanize import humanize, humanizer_enabled
 from sellbird.integrations.mail_provider import NATIVE_PROVIDERS
 from sellbird.models.campaign import Campaign, EmailStep
@@ -176,9 +176,17 @@ class Writer:
                 logger.info("Writer: No prospects at or above the minimum score.")
                 return
 
+        # icp.geography is the territory: a prospect at a company placed
+        # outside it stays 'new' and is never written for (see
+        # sellbird.geography.outside).
+        prospects_with_email = await self._in_territory(prospects_with_email)
+        if not prospects_with_email:
+            logger.info("Writer: No prospects inside icp.geography.")
+            return
+
         # Batches are capped and leftovers wait a cycle, so the order here is
         # who gets written to (and sent) first: the earliest icp.geography
-        # entry they're in, then score. Everyone stays; the rest just wait.
+        # entry they're in, then score.
         prospects_with_email = await self._prioritise(prospects_with_email)
 
         # Batch prospects into campaign groups (by industry/title for relevance)
@@ -631,6 +639,23 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         if len(steps) < 3:
             logger.warning(f"Writer: Expected 3 emails, got {len(steps)}.")
         return steps
+
+    async def _in_territory(self, prospects: list) -> list:
+        """Prospects whose company isn't placed outside icp.geography."""
+        kept, skipped = [], []
+        for p in prospects:
+            try:
+                where = await prospect_outside(self.state, p, self.config)
+            except Exception as e:
+                logger.debug(f"Writer: territory check failed for {p.id}: {e}")
+                where = ""
+            (skipped if where else kept).append(where or p)
+        if skipped:
+            logger.info(
+                f"Writer: Skipping {len(skipped)} prospect(s) outside icp.geography "
+                f"({', '.join(sorted(set(skipped))[:5])})."
+            )
+        return kept
 
     async def _prioritise(self, prospects: list) -> list:
         """Prospects by geography tier, then score; ties keep their order."""

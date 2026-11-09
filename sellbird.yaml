@@ -37,11 +37,16 @@ icp:
     - "Head of Growth"
     - "CMO"
     - "Director of Marketing"
-  # In priority order: the first entry is written to first, then the next.
-  # A company outside every entry is still contacted, only after the rest.
+  # Your territory, in priority order: the first entry is written to first,
+  # then the next. Entries are places ("Seattle, WA"), countries, or regions
+  # ("Pacific Northwest", "North America", "Americas", or your own in
+  # icp.regions). A company placed outside every entry isn't contacted
+  # (outside_geography: last contacts it after the rest instead).
   # A city with icp.geo_coordinates matches anywhere inside its radius.
   geography:
     - "United States"
+  # regions: { "DACH": ["DE", "AT", "CH"] }   # ISO countries or "US-WA"-style states
+  # outside_geography: skip                   # skip | last
   # Roles that signal a company is in-market RIGHT NOW (a company hiring a
   # "Head of Growth" is shopping for growth tooling). Used for careers-page
   # scanning and job-board discovery. Empty = fall back to titles above.

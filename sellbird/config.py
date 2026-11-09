@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import date as _date, time as _time
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 
 import yaml
 
@@ -63,10 +63,20 @@ class ICPConfig(BaseModel):
     industries: list[str]
     company_size: str
     titles: list[str]
-    # Ordered: earlier entries are written to (and sent) first, and a
-    # company outside every entry still counts, only last. See
-    # sellbird/geography.py for how an entry matches a company's location.
+    # The territory, in priority order: earlier entries are written to (and
+    # sent) first. An entry is a place ("Seattle, WA"), a country ("United
+    # States") or a region ("Pacific Northwest", "Americas", or one defined
+    # in `regions`). See sellbird/geography.py for how an entry matches.
     geography: list[str]
+    # Named regions for `geography`, as ISO codes: countries ("US", "MX") or
+    # states/provinces ("US-WA", "CA-BC"). Adds to or redefines the built-in
+    # ones (sellbird.geography.REGIONS), e.g. "DACH": ["DE", "AT", "CH"].
+    regions: dict[str, list[str]] = {}
+    # A company Sellbird can place in a country that is in no `geography`
+    # entry: "skip" never writes to it or sends what's queued; "last" keeps
+    # it, after every entry. A company with no known location is never
+    # skipped, only last.
+    outside_geography: Literal["skip", "last"] = "skip"
     # Role keywords that indicate a company is in-market right now (a company
     # hiring a "Head of Growth" is buying growth tooling). Empty → falls back
     # to `titles`. Used for careers-page scanning and job-board discovery.

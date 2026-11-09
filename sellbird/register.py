@@ -14,6 +14,7 @@ import io
 from sellbird.config import ComplianceConfig, live_do_not_contact
 from sellbird.fit import company_fit, current_roles
 from sellbird.gate import do_not_contact_match
+from sellbird.geography import outside as geo_outside
 
 COLUMNS = [
     "company", "website", "sector", "area", "fit", "why_selected",
@@ -39,7 +40,7 @@ def _contacts(prospects: list[dict]) -> str:
 
 def company_status(company: dict, prospects: list[dict], outbox: list[dict],
                    observations: list[dict], dnc: list[str],
-                   send_to_risky: bool = False) -> tuple[str, str]:
+                   send_to_risky: bool = False, config=None) -> tuple[str, str]:
     """(status, why) for one company. ``why`` says why nothing went out, or
     what happens next. ``send_to_risky`` is channels.email.send_to_risky."""
     domain = (company.get("domain") or "").lower()
@@ -54,6 +55,9 @@ def company_status(company: dict, prospects: list[dict], outbox: list[dict],
         return "Opted out", "A contact here asked not to be emailed"
 
     states = {o.get("status") for o in outbox}
+    sent = "sent" in states or any(p.get("status") in DONE for p in prospects)
+    if not sent and config is not None and geo_outside(company.get("location") or "", config):
+        return "Excluded", "Outside your geography (icp.geography)"
     if "sent" in states or any(p.get("status") in DONE for p in prospects):
         replied = any(p.get("status") in {"replied", "meeting", "closed"} for p in prospects)
         return ("Replied" if replied else "Emailed"), ""
@@ -130,7 +134,8 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
         cid = c["id"]
         ps, obs = by_p.get(cid, []), by_obs.get(cid, [])
         fit, reasons = company_fit(c, ps, obs, config, dnc)
-        status, why = company_status(c, ps, by_o.get(cid, []), obs, dnc, send_to_risky)
+        status, why = company_status(c, ps, by_o.get(cid, []), obs, dnc, send_to_risky,
+                                     config=config)
         sector, area = c.get("industry") or "", c.get("location") or ""
         found = f"Found via {c['source']}" if c.get("source") else ""
         rows.append({

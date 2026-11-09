@@ -371,7 +371,13 @@ def _ref_km(point, zone: str) -> float:
 
 def _region(parts: list[str], text_country: str, hint: str) -> str:
     """The zone of a US state, Canadian province or Australian state named
-    in the location, or "".
+    in the location, or "". See ``_region_hit``."""
+    return _region_hit(parts, text_country, hint)[1]
+
+
+def _region_hit(parts: list[str], text_country: str, hint: str) -> tuple[str, str]:
+    """("US-WA", zone) for a US state, Canadian province or Australian state
+    named in the location, or ("", "").
 
     ``text_country`` is a country written in the location itself, ``hint``
     one known from elsewhere. A two-letter code that is both a US state and
@@ -379,30 +385,31 @@ def _region(parts: list[str], text_country: str, hint: str) -> str:
     that country.
     """
     context = text_country or hint
-    us_names = {name: zone for name, zone in US_STATES.values()}
+    us_names = {name: (code, zone) for code, (name, zone) in US_STATES.items()}
     for part in parts:
         name = _clean(part)
         codes = _codes(part)
         if text_country in ("", "US"):
             if name in us_names:
-                return us_names[name]
+                code, zone = us_names[name]
+                return "US-" + code, zone
             if name.replace(" ", "") == "dc":  # "D.C.", "d.c."
-                return US_STATES["DC"][1]
+                return "US-DC", US_STATES["DC"][1]
             for code in codes:
                 if code in US_STATES and not (
                         hint and hint != "US" and country_code(code) == hint):
-                    return US_STATES[code][1]
+                    return "US-" + code, US_STATES[code][1]
         if context in ("", "CA"):
             code = REGION_ALIASES.get(name, "")
             for key, (full, zone) in CA_PROVINCES.items():
                 if name == full or code == key or (
                         key in codes and (context == "CA" or key in CA_CODES_ALONE)):
-                    return zone
+                    return "CA-" + key, zone
         if context in ("", "AU"):
             for key, (full, zone) in AU_STATES.items():
                 if name == full or (key in codes and (context == "AU" or key in AU_CODES_ALONE)):
-                    return zone
-    return ""
+                    return "AU-" + key, zone
+    return "", ""
 
 
 def zone_for(location: str = "", country: str = "", point: str = "") -> str:
@@ -471,6 +478,22 @@ def country_for(location: str = "", point: str = "") -> tuple[str, bool]:
     if zone:
         country = country or zone_country(zone)
     return country, bool(country)
+
+
+def subdivision_for(location: str = "", point: str = "") -> str:
+    """The US state, Canadian province or Australian state a location names,
+    as an ISO 3166-2 code ("US-WA", "CA-BC"), or "". Only when it agrees
+    with ``country_for``, so "Perth, WA" in Australia is not Washington."""
+    country, certain = country_for(location, point)
+    if not country:
+        return ""
+    code, zone = _region_hit(_parts(location), country, "")
+    coords = _point(point)
+    if not code or not code.startswith(country + "-"):
+        return ""
+    if coords and _ref_km(coords, zone) > MAX_REGION_KM:
+        return ""
+    return code
 
 
 def _resolve(location: str = "", country: str = "", point: str = "") -> tuple[str, bool]:

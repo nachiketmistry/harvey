@@ -11,7 +11,7 @@ Two files, both plain text.
 ```yaml
 persona:      { name, company, role, email, tone }
 product:      { name, description, pricing, key_benefits, objection_responses, offer }
-icp:          { industries, titles, company_size, geography, hiring_signals, site_mentions, geo_coordinates }
+icp:          { industries, titles, company_size, geography, regions, outside_geography, hiring_signals, site_mentions, geo_coordinates }
 channels:
   email:      { provider: gmail | microsoft | smtp | instantly, max_daily_sends, per_inbox_daily_cap,
                 require_approval, send_to_risky, min_write_score, max_bounce_rate, warmup, send_window, signature }
@@ -21,7 +21,9 @@ writer:       { humanizer }   # optional; true adds one editing pass per batch u
               # email_rules: your own markdown rules for the emails' shape (see The skills library)
 ```
 
-`icp.geography` is in priority order. Sellbird drafts a few emails a cycle, so it takes prospects at companies in the first entry first, then the next, then everyone else: a company outside every entry is still contacted, just last. An entry matches by place name ("Denver, CO"), by country ("United States", "Canada"), or anywhere inside its `geo_coordinates` radius when discovery has cached the company's coordinates. The dashboard's company fit shows which entry a company falls in.
+`icp.geography` is your territory, in priority order. Sellbird drafts a few emails a cycle, so it takes prospects at companies in the first entry first, then the next. An entry is a place ("Denver, CO"), a country ("United States", "Canada"), or a region: "Pacific Northwest" (Washington, Oregon, Idaho, British Columbia), "North America" (US, Canada, Mexico), "Americas", "Latin America", "South America", "Central America", "Caribbean" (UN M49 countries), or one you define in `icp.regions` as ISO codes, countries or states/provinces: `"DACH": ["DE", "AT", "CH"]`, `"PNW": ["US-WA", "US-OR"]`. A place entry also matches anywhere inside its `geo_coordinates` radius when discovery has cached the company's coordinates.
+
+The entries are also the boundary. A company Sellbird can place in a country that is in none of them (a university in Hong Kong when your list ends at "Americas") is not written to, and anything already queued for it is cancelled with the reason "outside your geography". Set `icp.outside_geography: last` to contact those companies after everyone else instead. A company whose location is unknown is never ruled out, only contacted last, and if any entry is a name Sellbird can't place ("Western Europe" with no `icp.regions` definition), nobody is ruled out. The dashboard's company fit shows which entry a company falls in, and `sellbird companies` lists out-of-territory companies as Excluded.
 
 `min_write_score` (0-100, default 0) is the lowest Scout fit score the writer
 drafts for: a prospect below it keeps its deliverable address but gets no

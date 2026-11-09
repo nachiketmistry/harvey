@@ -15,7 +15,8 @@ the moment it changes.
                           (5 for a careers page with no matching role)
 
 Location adds a reason but no points: icp.geography orders who is written
-to first (sellbird.geography), it doesn't make a company less of a fit.
+to first and who is out of territory (sellbird.geography); it doesn't make
+a company less of a fit.
 
 A company on the do-not-contact list scores 0.
 """
@@ -26,6 +27,7 @@ import re
 
 from sellbird.collectors.people import title_matches
 from sellbird.gate import do_not_contact_match
+from sellbird.geography import outside as geo_outside
 from sellbird.geography import tier as geo_tier
 
 SECTOR, DECISION_MAKER, REACHABLE, BUYING = 20, 30, 25, 25
@@ -135,12 +137,16 @@ def company_fit(company: dict, prospects: list[dict], observations: list[dict],
         score += 5
         reasons.append("careers page, no matching role")
 
-    # Location orders the queue (see sellbird.geography) rather than the
-    # score: a company outside every entry is still a fit, just later.
+    # Location orders the queue and bounds it (see sellbird.geography)
+    # rather than the score.
     if getattr(icp, "geography", None) and (company.get("location") or "").strip():
         index, entry = geo_tier(company["location"], config)
-        reasons.append(f"location: {entry} (priority {index + 1})" if index is not None
-                       else "location: outside your geography (contacted last)")
+        if index is not None:
+            reasons.append(f"location: {entry} (priority {index + 1})")
+        elif geo_outside(company["location"], config):
+            reasons.append("location: outside your geography (not contacted)")
+        else:
+            reasons.append("location: outside your geography (contacted last)")
 
     return min(score, 100), reasons
 

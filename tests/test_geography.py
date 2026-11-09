@@ -1,17 +1,20 @@
-"""icp.geography order is priority: earlier entries are written to first."""
+"""icp.geography is the territory in priority order: earlier entries are
+written to first, and a company placed outside every entry is not contacted."""
 
 import asyncio
 from types import SimpleNamespace
 
 from sellbird.agents.writer import Writer
 from sellbird.fit import company_fit
-from sellbird.geography import matches, rank, tier
+from sellbird.geography import matches, outside, rank, tier
 
 
-def config(geography=("Denver, CO", "United States", "Canada"), coords=None):
+def config(geography=("Denver, CO", "United States", "Canada"), coords=None,
+           regions=None, outside_geography="skip"):
     return SimpleNamespace(icp=SimpleNamespace(
         geography=list(geography),
         geo_coordinates=coords if coords is not None else {"Denver, CO": "39.7392,-104.9903,50"},
+        regions=regions or {}, outside_geography=outside_geography,
         industries=[], titles=[], hiring_signals=[],
     ), compliance=SimpleNamespace(do_not_contact=[]))
 
@@ -65,7 +68,9 @@ def test_fit_reports_location_without_changing_the_score():
     assert score == 0
     assert "location: Canada (priority 3)" in reasons
     far = {**company, "location": "Lyon, France"}
-    assert company_fit(far, [], [], config())[1][-1] == "location: outside your geography (contacted last)"
+    assert company_fit(far, [], [], config())[1][-1] == "location: outside your geography (not contacted)"
+    kept = config(outside_geography="last")
+    assert company_fit(far, [], [], kept)[1][-1] == "location: outside your geography (contacted last)"
     assert not any(r.startswith("location") for r in company_fit({**company, "location": ""}, [], [], config())[1])
 
 
@@ -89,3 +94,58 @@ def test_writer_orders_by_tier_then_score():
                  p("5", "ca", 90), p("6", "", 95)]
     ordered = asyncio.run(writer._prioritise(prospects))
     assert [x.id for x in ordered] == ["3", "4", "2", "5", "1", "6"]
+
+
+PNW = ("Pacific Northwest", "United States", "Americas")
+
+
+def test_built_in_regions_match_by_state_and_country():
+    cfg = config(geography=PNW, coords={})
+    assert tier("Washougal, WA", cfg) == (0, "Pacific Northwest")
+    assert tier("Portland, Oregon", cfg) == (0, "Pacific Northwest")
+    assert tier("Boise, ID", cfg) == (0, "Pacific Northwest")
+    assert tier("Vancouver, BC", cfg) == (0, "Pacific Northwest")
+    assert tier("Oakland, CA", cfg) == (1, "United States")
+    assert tier("Toronto, ON", cfg) == (2, "Americas")
+    assert tier("Sao Paulo, Brazil", cfg) == (2, "Americas")
+    assert tier("MX", cfg) == (2, "Americas")
+    assert tier("HK", cfg) == (None, "")
+    # Perth, Western Australia is not Washington state.
+    assert tier("Perth, WA, Australia", cfg) == (None, "")
+
+
+def test_configured_regions_add_to_and_override_built_ins():
+    cfg = config(geography=("DACH", "PNW"), coords={},
+                 regions={"DACH": ["DE", "AT", "CH"], "pnw": ["US-WA"]})
+    assert tier("Vienna, Austria", cfg) == (0, "DACH")
+    assert tier("Seattle, WA", cfg) == (1, "PNW")
+    assert tier("Portland, OR", cfg) == (None, "")
+
+
+def test_outside_is_a_company_placed_in_no_entry():
+    cfg = config(geography=PNW, coords={})
+    assert outside("HK", cfg)
+    assert outside("Lyon, France", cfg)
+    assert outside("Sydney, Australia", cfg)
+    assert not outside("Seattle, WA", cfg)
+    assert not outside("Toronto, ON", cfg)
+    # Unknown location: kept, ranked last.
+    assert not outside("", cfg)
+    assert not outside("Remote", cfg)
+
+
+def test_outside_respects_last_and_unplaceable_entries():
+    assert not outside("HK", config(geography=PNW, coords={}, outside_geography="last"))
+    # Sellbird can't tell who is in "Western Europe", so it rules nobody out.
+    assert not outside("HK", config(geography=("United States", "Western Europe"), coords={}))
+    assert not outside("HK", config(geography=(), coords={}))
+
+
+def test_writer_leaves_out_of_territory_prospects_unwritten():
+    writer = Writer.__new__(Writer)
+    writer.config = config(geography=PNW, coords={})
+    writer.state = FakeState({"hk": "HK", "wa": "Washougal, WA", "fr": "FR", "us": "Austin, TX"})
+    p = lambda pid, cid: SimpleNamespace(id=pid, company_id=cid, score=50)
+    kept = asyncio.run(writer._in_territory([p("1", "hk"), p("2", "wa"), p("3", "fr"),
+                                             p("4", "us"), p("5", "")]))
+    assert [x.id for x in kept] == ["2", "4", "5"]
