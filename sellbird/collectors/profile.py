@@ -20,6 +20,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from sellbird.locations import LOCATION_PATHS, MAX_SITES, join_sites, sites_from_schema
 from sellbird.public_http import public_http_client
 from sellbird.startups import funding_text
 
@@ -1272,6 +1273,19 @@ class ProfileCollector:
             said = [p for p in phrases if p in found]
             add("SITE_MENTIONS", num=len(said), text="; ".join(said),
                 url=found[said[0]] if said else site)
+
+        # Offices, from the address data on the company's own pages: the
+        # homepage, then a locations or contact page. Recorded even when
+        # empty, so an office the site stops listing drops out.
+        if self.wants("COMPANY_SITE"):
+            sites, where = sites_from_schema(home), site
+            url, html = await self._first_present(site, LOCATION_PATHS)
+            more = sites_from_schema(html) if html else []
+            if more:
+                where = url
+            sites = list(dict.fromkeys(sites + more))
+            add("COMPANY_SITE", num=len(sites), text=join_sites(sites[:MAX_SITES]),
+                url=where)
 
         # Incumbent agency — the compounding signal
         agency = self.detect_agency(home, domain)

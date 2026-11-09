@@ -287,6 +287,22 @@ SIGNAL_CATALOG: list[dict] = [
         "confidence_floor": 0.0,
     },
     {
+        "code": "COMPANY_SITE",
+        "label": "Offices and sites",
+        "description": (
+            "Every office the company lists in the address data on its own pages "
+            "(schema.org addresses on the homepage, contact and locations pages). "
+            "For someone whose own location isn't known, a site in your "
+            "icp.geography makes them a possible local, ranked behind people "
+            "known to be there."
+        ),
+        "category": "profile",
+        "value_type": "text",
+        "collector": "profile",
+        "cost_note": "free (homepage, contact and locations pages)",
+        "confidence_floor": 0.0,
+    },
+    {
         "code": "HIRING_ROLE",
         "label": "Hiring for a relevant role",
         "description": (
@@ -363,6 +379,22 @@ SIGNAL_CATALOG: list[dict] = [
         "value_type": "bool",
         "collector": "people",
         "cost_note": "free (company website)",
+        "confidence_floor": 0.0,
+    },
+
+    {
+        "code": "PERSON_LOCATION",
+        "label": "Where the person works",
+        "description": (
+            "The city or region this person works from, remote included, as you "
+            "or your CRM gave it (`sellbird contacts --locate`). Places them in "
+            "your icp.geography ahead of anything known about their company, "
+            "since a Pittsburgh VP at a Seattle company is still in Pittsburgh."
+        ),
+        "category": "people",
+        "value_type": "text",
+        "collector": "manual",
+        "cost_note": "free (you or your CRM)",
         "confidence_floor": 0.0,
     },
 

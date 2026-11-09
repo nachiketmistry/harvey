@@ -1912,6 +1912,16 @@ class StateManager:
         row = await self._latest_yes(company_id, "FUNDING_ROUND")
         return parse_funding(row.get("value_text") or "") if row else None
 
+    async def get_prospect_observations(self, prospect_id: str, signal_code: str) -> list[dict]:
+        """A person's observations of one signal, newest first."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM observations WHERE prospect_id = ? AND signal_code = ? "
+                "ORDER BY observed_at DESC", (prospect_id, signal_code),
+            ) as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
+
     async def get_observations(
         self,
         company_id: str = "",

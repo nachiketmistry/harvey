@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from sellbird.brain import Brain
 from sellbird.config import EmailRulesError, SellbirdConfig, compliance_of, load_email_rules
-from sellbird.geography import prospect_outside, prospect_rank
+from sellbird.geography import CERTAINTY, UNKNOWN, prospect_outside, prospect_rank
 from sellbird.humanize import humanize, humanizer_enabled
 from sellbird.integrations.mail_provider import NATIVE_PROVIDERS
 from sellbird.models.campaign import Campaign, EmailStep
@@ -711,7 +711,7 @@ Return ONLY a JSON array (no markdown fences, no commentary):
                 ranks[p.id] = await prospect_rank(self.state, p, self.config)
             except Exception as e:
                 logger.debug(f"Writer: geography rank failed for {p.id}: {e}")
-                ranks[p.id] = len(self.config.icp.geography or [])
+                ranks[p.id] = (len(self.config.icp.geography or []), CERTAINTY[UNKNOWN])
         return sorted(prospects, key=lambda p: (ranks[p.id], -(p.score or 0)))
 
     def _group_prospects(self, prospects: list) -> dict[str, list]:

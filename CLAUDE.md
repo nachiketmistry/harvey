@@ -179,7 +179,7 @@ Ask the user these questions and build `sellbird.yaml` and `skills/product_knowl
 
 ### Step 4: Confirm Signals
 
-Sellbird ships a catalog of 30 signals it knows how to collect, all **proposed** and
+Sellbird ships a catalog of 32 signals it knows how to collect, all **proposed** and
 none active. Nothing is prospected against until the user confirms them.
 
 Send them to `sellbird dashboard` → **Signals**, where each one shows a
@@ -341,6 +341,7 @@ sellbird export --all          # Full raw list, no filters
 sellbird companies             # Company register CSV: every company, its fit score, and why it wasn't contacted
 sellbird gmail auth            # One-time Gmail OAuth (when provider: gmail)
 sellbird gmail test            # Verify the Gmail connection
+sellbird contacts --locate EMAIL "City, ST"   # Where a contact works (geography places people by it); --import-locations crm.csv
 sellbird outbox                # Review queued emails; --approve <id> / --approve-all / --reject <id> / --redraft <id> [--note] / --redraft-all
 sellbird signals               # The signal vocabulary; --confirm / --reject CODES (or 'free' / 'all')
 sellbird discover              # Find businesses; --providers / --estimate / --provider <key>

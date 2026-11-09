@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 from sellbird.agents.writer import Writer
 from sellbird.fit import company_fit
-from sellbird.geography import matches, outside, rank, tier
+from sellbird.geography import (
+    COMPANY, PERSON, PRESENCE, UNKNOWN, matches, outside, place, prospect_place, rank, tier,
+)
 
 
 def config(geography=("Denver, CO", "United States", "Canada"), coords=None,
@@ -66,7 +68,7 @@ def test_fit_reports_location_without_changing_the_score():
     company = {"id": "c1", "domain": "acme.example", "industry": "", "location": "Toronto, ON"}
     score, reasons = company_fit(company, [], [], config())
     assert score == 0
-    assert "location: Canada (priority 3)" in reasons
+    assert "location: Canada (priority 3): company is in Toronto, ON" in reasons
     far = {**company, "location": "Lyon, France"}
     assert company_fit(far, [], [], config())[1][-1] == "location: outside your geography (not contacted)"
     kept = config(outside_geography="last")
@@ -75,14 +77,24 @@ def test_fit_reports_location_without_changing_the_score():
 
 
 class FakeState:
-    def __init__(self, places):
-        self.places = places
+    """Companies by id with one location each; optional offices per company
+    (COMPANY_SITE) and locations per person (PERSON_LOCATION)."""
+    def __init__(self, places, sites=None, people=None):
+        self.places, self.sites, self.people = places, sites or {}, people or {}
 
     async def get_company(self, company_id):
         return SimpleNamespace(location=self.places.get(company_id, ""))
 
     async def get_setting(self, key):
         return None
+
+    async def get_observations(self, company_id="", signal_code="", latest_only=False, limit=500):
+        sites = self.sites.get(company_id)
+        return [{"value_text": " | ".join(sites)}] if sites and signal_code == "COMPANY_SITE" else []
+
+    async def get_prospect_observations(self, prospect_id, signal_code):
+        return [{"value_text": v, "confidence": c, "observed_at": t}
+                for v, c, t in self.people.get(prospect_id, [])] if signal_code == "PERSON_LOCATION" else []
 
 
 def test_writer_orders_by_tier_then_score():
@@ -149,3 +161,65 @@ def test_writer_leaves_out_of_territory_prospects_unwritten():
     kept = asyncio.run(writer._in_territory([p("1", "hk"), p("2", "wa"), p("3", "fr"),
                                              p("4", "us"), p("5", "")]))
     assert [x.id for x in kept] == ["2", "4", "5"]
+
+
+# ── placing a person: their own location first, then the company's footprint ──
+
+def test_person_location_wins_over_the_company():
+    cfg = config(geography=PNW, coords={})
+    # A Pittsburgh VP at a company with a Bellevue office is in the US tier.
+    p = place(cfg, ("Pittsburgh, PA", ""), [("Chicago, IL", ""), ("Bellevue, WA", "")])
+    assert (p.tier, p.basis, p.outside) == (1, PERSON, False)
+    # A remote engineer in Seattle at an Austin company is local.
+    assert place(cfg, ("Seattle, WA", ""), [("Austin, TX", "")]).tier == 0
+    # Known to work in Hong Kong: out, even at a Seattle company.
+    assert place(cfg, ("Hong Kong", ""), [("Seattle, WA", "")]).outside
+
+
+def test_unplaceable_person_location_falls_back_to_the_company():
+    cfg = config(geography=PNW, coords={})
+    p = place(cfg, ("Remote", ""), [("Seattle, WA", "")])
+    assert (p.tier, p.basis) == (0, COMPANY)
+
+
+def test_company_footprint_is_a_weaker_guess_with_more_sites():
+    cfg = config(geography=PNW, coords={})
+    one = place(cfg, None, [("Seattle, WA", "")])
+    many = place(cfg, None, [("Chicago, IL", ""), ("Bellevue, WA", ""), ("London, UK", "")])
+    assert (one.tier, one.basis) == (0, COMPANY)
+    assert (many.tier, many.basis, many.where) == (0, PRESENCE, "Bellevue, WA")
+    known = place(cfg, ("Seattle, WA", ""), [])
+    assert known.key(3) < one.key(3) < many.key(3)
+    # Still behind nobody in a lower tier: a weak PNW guess beats a sure US one.
+    assert many.key(3) < place(cfg, ("Austin, TX", ""), []).key(3)
+
+
+def test_a_company_is_out_only_when_every_site_is():
+    cfg = config(geography=PNW, coords={})
+    assert place(cfg, None, [("Hong Kong", ""), ("Lyon, France", "")]).outside
+    hk_with_seattle = place(cfg, None, [("Hong Kong", ""), ("Seattle, WA", "")])
+    assert not hk_with_seattle.outside and hk_with_seattle.tier == 0
+    assert not place(cfg, None, [("Hong Kong", ""), ("Remote", "")]).outside
+    nothing = place(cfg, None, [])
+    assert (nothing.tier, nothing.basis, nothing.outside) == (None, UNKNOWN, False)
+
+
+def test_prospect_place_reads_people_and_sites():
+    cfg = config(geography=PNW, coords={})
+    state = FakeState({"coal": "Chicago, IL"}, sites={"coal": ["Bellevue, WA, US"]},
+                      people={"john": [("Pittsburgh, PA", 0.9, "2026-11-01"),
+                                       ("Seattle, WA", 0.5, "2026-11-08")]})
+    john = SimpleNamespace(id="john", company_id="coal")
+    other = SimpleNamespace(id="ann", company_id="coal")
+    # The more confident source wins, even when a weaker one is newer.
+    assert asyncio.run(prospect_place(state, john, cfg)).where == "Pittsburgh, PA"
+    ann = asyncio.run(prospect_place(state, other, cfg))
+    assert (ann.tier, ann.basis) == (0, PRESENCE)
+
+
+def test_fit_counts_a_local_office():
+    company = {"id": "c1", "domain": "acme.example", "industry": "", "location": "Chicago, IL"}
+    sites = [{"signal_code": "COMPANY_SITE", "value_text": "Chicago, IL, US | Bellevue, WA, US",
+              "observed_at": "2026-11-09"}]
+    reasons = company_fit(company, [], sites, config(geography=PNW, coords={}))[1]
+    assert "location: Pacific Northwest (priority 1): company has a site in Bellevue, WA, US" in reasons

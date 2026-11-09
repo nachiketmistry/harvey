@@ -27,8 +27,7 @@ import re
 
 from sellbird.collectors.people import title_matches
 from sellbird.gate import do_not_contact_match
-from sellbird.geography import outside as geo_outside
-from sellbird.geography import tier as geo_tier
+from sellbird.geography import company_place
 
 SECTOR, DECISION_MAKER, REACHABLE, BUYING = 20, 30, 25, 25
 EMAIL_POINTS = {"verified": 25, "risky": 12, "guess": 5}
@@ -138,14 +137,15 @@ def company_fit(company: dict, prospects: list[dict], observations: list[dict],
         reasons.append("careers page, no matching role")
 
     # Location orders the queue and bounds it (see sellbird.geography)
-    # rather than the score.
-    if getattr(icp, "geography", None) and (company.get("location") or "").strip():
-        index, entry = geo_tier(company["location"], config)
-        if index is not None:
-            reasons.append(f"location: {entry} (priority {index + 1})")
-        elif geo_outside(company["location"], config):
+    # rather than the score. Each contact is placed on their own when their
+    # location is known; this is the company's footprint.
+    if getattr(icp, "geography", None):
+        where = company_place(company, observations, config)
+        if where.outside:
             reasons.append("location: outside your geography (not contacted)")
-        else:
+        elif where.tier is not None:
+            reasons.append(f"location: {where.reason()}")
+        elif where.basis != "unknown":
             reasons.append("location: outside your geography (contacted last)")
 
     return min(score, 100), reasons

@@ -14,7 +14,7 @@ import io
 from sellbird.config import ComplianceConfig, live_do_not_contact
 from sellbird.fit import company_fit, current_roles
 from sellbird.gate import do_not_contact_match
-from sellbird.geography import outside as geo_outside
+from sellbird.geography import company_place
 
 COLUMNS = [
     "company", "website", "sector", "area", "fit", "why_selected",
@@ -56,7 +56,7 @@ def company_status(company: dict, prospects: list[dict], outbox: list[dict],
 
     states = {o.get("status") for o in outbox}
     sent = "sent" in states or any(p.get("status") in DONE for p in prospects)
-    if not sent and config is not None and geo_outside(company.get("location") or "", config):
+    if not sent and config is not None and company_place(company, observations, config).outside:
         return "Excluded", "Outside your geography (icp.geography)"
     if "sent" in states or any(p.get("status") in DONE for p in prospects):
         replied = any(p.get("status") in {"replied", "meeting", "closed"} for p in prospects)

@@ -548,6 +548,72 @@ async def _redraft(state, args):
     print("  cycles, in batches of channels.email.max_awaiting_review, using your recent edits.\n")
 
 
+# Where a person location came from, and how much it's trusted against
+# another source (sellbird.geography.person_location takes the highest).
+LOCATION_SOURCES = {"you": 1.0, "crm": 0.9}
+LOCATION_COLUMNS = ("location", "person location", "contact location")
+LOCATION_PARTS = ("city", "state", "region", "country")
+
+
+def _csv_location(row: dict) -> str:
+    """A row's location: a location column, else city/state/country joined."""
+    cells = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
+    for key in LOCATION_COLUMNS:
+        if cells.get(key):
+            return cells[key]
+    return ", ".join(cells[k] for k in LOCATION_PARTS if cells.get(k))
+
+
+def cmd_contacts(args):
+    """Record where contacts work, so geography places them by it."""
+    import csv
+    from sellbird.config import load_config
+    from sellbird.geography import prospect_place
+    from sellbird.signals import seed_signal_catalog
+    from sellbird.state import StateManager
+
+    async def _contacts():
+        state = StateManager()
+        await state.init_db()
+        await seed_signal_catalog(state)
+        config = load_config()
+
+        async def locate(email: str, place: str, source: str) -> str:
+            prospect = await state.get_prospect_by_email(email.strip().lower())
+            if prospect is None:
+                return "no contact"
+            await state.add_observation(
+                "PERSON_LOCATION", prospect_id=prospect.id, company_id=prospect.company_id or "",
+                collector=source, value_text=place.strip(), confidence=LOCATION_SOURCES[source])
+            return (await prospect_place(state, prospect, config)).reason()
+
+        if args.locate:
+            email, place = args.locate
+            print(f"\n  {email}: {await locate(email, place, 'you')}\n")
+            return
+        if args.import_locations:
+            with open(args.import_locations, newline="", encoding="utf-8-sig") as f:
+                rows = list(csv.DictReader(f))
+            done = missing = blank = 0
+            for row in rows:
+                cells = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
+                email, place = cells.get("email", ""), _csv_location(row)
+                if not email or not place:
+                    blank += 1
+                    continue
+                if await locate(email, place, "crm") == "no contact":
+                    missing += 1
+                else:
+                    done += 1
+            print(f"\n  Recorded {done} location(s). {missing} email(s) aren't contacts in Sellbird; "
+                  f"{blank} row(s) had no email or location.\n")
+            return
+        print("\n  sellbird contacts --locate EMAIL \"Pittsburgh, PA\"")
+        print("  sellbird contacts --import-locations crm.csv   (columns: email, and location or city/state/country)\n")
+
+    asyncio.run(_contacts())
+
+
 def cmd_outbox(args):
     """Review and approve queued outgoing emails."""
     from sellbird.state import StateManager
@@ -1235,6 +1301,14 @@ def main():
     sub.add_argument("microsoft_action", choices=["auth", "test"],
                      help="auth: one-time sign-in; test: verify connection")
     sub.set_defaults(func=cmd_microsoft)
+
+    # sellbird contacts
+    sub = subparsers.add_parser("contacts", help="Record where contacts work (geography)")
+    sub.add_argument("--locate", nargs=2, metavar=("EMAIL", "PLACE"),
+                     help='Where this contact works, e.g. --locate ann@acme.com "Seattle, WA"')
+    sub.add_argument("--import-locations", metavar="CSV", default="",
+                     help="CSV with email plus location (or city/state/country) columns, e.g. a CRM export")
+    sub.set_defaults(func=cmd_contacts)
 
     # sellbird outbox
     sub = subparsers.add_parser("outbox", help="Review/approve queued emails")

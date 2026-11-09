@@ -35,8 +35,11 @@ matches no entry, so it ranks with the rest.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from sellbird.locations import split_sites
 from sellbird.send_window import (
-    _clean, _country_in, _km, _parts, _place, _point, country_for, subdivision_for,
+    _clean, _country_in, _km, _parts, _point, country_for, subdivision_for,
 )
 
 # Why a queued email to an out-of-territory company was cancelled.
@@ -181,15 +184,128 @@ def rank(location: str, config, point: str = "") -> int:
     return len(getattr(getattr(config, "icp", None), "geography", None) or [])
 
 
-async def prospect_rank(state, prospect, config) -> int:
-    """``rank`` for a prospect, from its company's location and the
-    coordinates discovery cached for it."""
-    location, point = await _place(state, prospect)
-    return rank(location, config, point)
+# ── Placing a person ──
+#
+# Sellbird sells in person first, so the question is where this person can be
+# met. Evidence is weighed by precedence, not combined (the survivorship rule
+# master-data systems use): the person's own location (remote included) wins
+# outright, and only when it's unknown does the company's footprint stand in,
+# as a weaker guess the more sites it has.
+
+PERSON, COMPANY, PRESENCE, UNKNOWN = "person", "company", "presence", "unknown"
+# Within a tier: known to be there, then a one-site company there, then a
+# company with one of several sites there.
+CERTAINTY = {PERSON: 0, COMPANY: 1, PRESENCE: 2, UNKNOWN: 3}
+
+
+@dataclass(frozen=True)
+class Placement:
+    tier: int | None      # index into icp.geography, None when in no entry
+    entry: str            # that entry, or ""
+    basis: str            # PERSON, COMPANY, PRESENCE or UNKNOWN
+    outside: bool         # out of territory: never emailed
+    where: str            # the location the answer rests on, for reasons
+
+    def key(self, entries: int) -> tuple[int, int]:
+        """Sort key: tier (no tier after every entry), then certainty."""
+        return (self.tier if self.tier is not None else entries, CERTAINTY[self.basis])
+
+    def reason(self) -> str:
+        if self.outside:
+            return f"outside your geography ({self.where})"
+        if self.tier is None:
+            return "location unknown" if self.basis == UNKNOWN else f"in none of your regions ({self.where})"
+        how = {PERSON: "works in", COMPANY: "company is in",
+               PRESENCE: "company has a site in"}[self.basis]
+        return f"{self.entry} (priority {self.tier + 1}): {how} {self.where}"
+
+
+def place(config, person: tuple[str, str] | None = None,
+          sites: list[tuple[str, str]] | None = None) -> Placement:
+    """Where a person stands in icp.geography.
+
+    ``person`` is their own (location, point), ``sites`` the company's
+    (location, point) list. A person location counts only when Sellbird can
+    place it in a country ("Remote" can't be, so the company stands in)."""
+    if person and person[0].strip() and country_for(person[0], person[1])[0]:
+        loc, point = person
+        index, entry = tier(loc, config, point)
+        return Placement(index, entry, PERSON, outside(loc, config, point), loc.strip())
+    known = [(loc.strip(), point) for loc, point in (sites or []) if loc and loc.strip()]
+    known = list(dict(known).items())  # one per distinct location
+    if not known:
+        return Placement(None, "", UNKNOWN, False, "")
+    basis = COMPANY if len(known) == 1 else PRESENCE
+    hits = [(tier(loc, config, point), loc) for loc, point in known]
+    best = min(((t, loc) for t, loc in hits if t[0] is not None),
+               key=lambda h: h[0][0], default=None)
+    if best is not None:
+        (index, entry), loc = best
+        return Placement(index, entry, basis, False, loc)
+    gone = all(outside(loc, config, point) for loc, point in known)
+    return Placement(None, "", basis, gone, "; ".join(loc for loc, _ in known)[:200])
+
+
+def company_place(company: dict, observations: list[dict], config) -> Placement:
+    """``place`` for a company with no particular person in mind, from its
+    location field and the newest COMPANY_SITE among ``observations``."""
+    sites = [company.get("location") or ""]
+    rows = sorted((o for o in observations or [] if o.get("signal_code") == "COMPANY_SITE"),
+                  key=lambda o: str(o.get("observed_at") or ""), reverse=True)
+    if rows:
+        sites += split_sites(rows[0].get("value_text") or "")
+    return place(config, None, [(s, "") for s in sites])
+
+
+async def _point_for(state, location: str) -> str:
+    cached = await state.get_setting("geo:" + location.strip().lower()) if location.strip() else ""
+    return "" if not cached or cached == "-" else cached
+
+
+async def company_sites(state, company_id: str, location: str = "") -> list[tuple[str, str]]:
+    """The company's (location, point) list: its own location field, then
+    the offices its site lists (the newest COMPANY_SITE observation)."""
+    places = [location] if location and location.strip() else []
+    if company_id:
+        rows = await state.get_observations(company_id=company_id, signal_code="COMPANY_SITE",
+                                            latest_only=True, limit=1)
+        if rows:
+            places += split_sites(rows[0].get("value_text") or "")
+    return [(p, await _point_for(state, p)) for p in places]
+
+
+async def person_location(state, prospect_id: str) -> str:
+    """The person's location: the most confident PERSON_LOCATION, newest
+    first among equals, or ""."""
+    rows = await state.get_prospect_observations(prospect_id, "PERSON_LOCATION")
+    rows = [r for r in rows if (r.get("value_text") or "").strip()]
+    if not rows:
+        return ""
+    best = max(rows, key=lambda r: (float(r.get("confidence") or 0), str(r.get("observed_at") or "")))
+    return best["value_text"].strip()
+
+
+async def prospect_place(state, prospect, config) -> Placement:
+    """``place`` for a prospect, from what Sellbird knows about them and
+    their company."""
+    person = await person_location(state, prospect.id) if getattr(prospect, "id", "") else ""
+    company_id = getattr(prospect, "company_id", "") or ""
+    location = ""
+    if company_id:
+        company = await state.get_company(company_id)
+        location = (getattr(company, "location", "") or "") if company else ""
+    sites = await company_sites(state, company_id, location)
+    return place(config, (person, await _point_for(state, person)) if person else None, sites)
+
+
+async def prospect_rank(state, prospect, config) -> tuple[int, int]:
+    """A prospect's sort key: tier, then how sure Sellbird is of it."""
+    entries = len(getattr(getattr(config, "icp", None), "geography", None) or [])
+    return (await prospect_place(state, prospect, config)).key(entries)
 
 
 async def prospect_outside(state, prospect, config) -> str:
-    """``outside`` for a prospect: their company's location when it is out
-    of territory (the reason to show), else ""."""
-    location, point = await _place(state, prospect)
-    return location.strip() if outside(location, config, point) else ""
+    """Where the prospect is when they're out of territory (the reason to
+    show), else ""."""
+    p = await prospect_place(state, prospect, config)
+    return p.where if p.outside else ""
