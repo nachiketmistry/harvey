@@ -286,6 +286,11 @@ class EmailChannelConfig(BaseModel):
     # address, as before. Raising it keeps Claude calls (and sends) for the
     # prospects that match the ICP best.
     min_write_score: int = 0
+    # With require_approval, the Writer drafts first emails only until this
+    # many people have one waiting for your review, then waits for you. You
+    # review a small batch, edit or redraft what's off, and the next batch
+    # is written with those edits in hand. 0 drafts without a limit.
+    max_awaiting_review: int = 10
     # Native providers queue mail for approval. Instantly cannot use that
     # outbox, so it holds campaigns and escalates replies while this is true.
     # Set false explicitly for full autopilot once you trust the output.

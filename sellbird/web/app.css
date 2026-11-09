@@ -728,6 +728,9 @@ details[open] > summary::before { rotate: 45deg; }
 }
 .desk-edit-subject { font-size: var(--fs-h3); font-weight: 500; }
 .desk-edit-body { font-size: var(--fs-body); line-height: 1.65; resize: vertical; max-width: 66ch; }
+.desk-redraft { margin-top: var(--sp-5); max-width: 66ch; }
+.desk-redraft label { display: block; font-size: var(--fs-ui); color: var(--text-2); }
+.desk-redraft .desk-edit-body { margin-top: var(--sp-2); }
 .desk-edit-subject:focus, .desk-edit-body:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 @media (max-width: 900px) {
   .desk { grid-template-columns: minmax(0, 1fr); }

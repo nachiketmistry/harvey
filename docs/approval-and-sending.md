@@ -4,11 +4,15 @@
 
 By default **every outgoing email waits for your approval.** Sellbird is a copilot until you decide otherwise.
 
-The dashboard's Outbox is a decisions desk: one email fills the pane, the rest wait in a rail, and you work the queue with `A` approve, `R` reject, `J`/`K` to move. That shape is deliberate — a wall of stacked drafts invites a single approve-all reflex, which is exactly the review the approval ladder exists to force.
+The dashboard's Outbox is a decisions desk: one email fills the pane, the rest wait in a rail, and you work the queue with `A` approve, `E` edit, `R` reject, `D` redraft, `J`/`K` to move. That shape is deliberate — a wall of stacked drafts invites a single approve-all reflex, which is exactly the review the approval ladder exists to force.
+
+**Small batches, and each one learns from the last.** With approval on, the Writer drafts first emails only until `channels.email.max_awaiting_review` people (10 by default, 0 for no limit) have one waiting for you, then stops until you've worked through them, best prospects first. That keeps you from paying for drafts you'd throw away after changing your mind about the shape. Fix what's nearly right with Edit: your five most recent edits go into the Writer's prompt as before/after examples, so the next batch writes the way you rewrote the last. Throw away what's wrong with Redraft (`D`), optionally saying what should change; the note applies to that person only, so a change for everyone belongs in your email rules (`writer.email_rules`). Redraft works only until something has gone to that person.
 
 ```bash
 sellbird outbox                 # review from the terminal
 sellbird outbox --approve-all
+sellbird outbox --redraft <id> --note "shorter, lead with the renewal"
+sellbird outbox --redraft-all   # write every first email awaiting review again
 sellbird sending pause          # kill switch, stops everything mid-flight
 sellbird retry-writes           # retry prospects the Writer gave up on after 3 unusable drafts
 ```

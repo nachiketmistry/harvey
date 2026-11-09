@@ -1148,6 +1148,11 @@ async def get_outbox_api():
             "paused": await state.get_setting("sending_paused"),
             "pending": await _with_context(
                 await state.get_outbox(status="pending_review", limit=100)),
+            # The list shows the first 100; these are what's really waiting,
+            # and what Approve all would approve (everything not held).
+            "pending_total": (await query_db(
+                "SELECT COUNT(*) AS n FROM outbox WHERE status = 'pending_review'"))[0]["n"],
+            "held_total": await state.count_held_for_review(),
             # Mail going out right now leads the list.
             "approved": (await state.get_outbox(status="sending", limit=10)
                          + await state.get_outbox(status="approved", limit=50)),
@@ -1498,6 +1503,34 @@ async def outbox_reject(item_id: str):
         if not await state.reject_outbox_item(item_id):
             return _refuse("That email is already sending or sent, so it can't be rejected.")
         return {"success": True}
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)}, status_code=500)
+
+
+@app.post("/api/outbox/{item_id}/redraft")
+async def outbox_redraft(item_id: str, request: Request):
+    """Throw away this person's unsent cold drafts so the Writer writes them
+    again, with an optional note on what to change."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    note = str((body or {}).get("note") or "").strip()[:1000] if isinstance(body, dict) else ""
+    try:
+        state = _state()
+        await state.init_db()
+        item = await state.get_outbox_item(item_id)
+        if not item or item.get("kind") != "sequence":
+            return _refuse("Only cold emails can be redrafted.")
+        n = await state.redraft_prospect(item["prospect_id"])
+        if not n:
+            return _refuse("Only drafts nobody has been sent yet can be written again.")
+        if note:
+            await state.add_feedback("contact", item["prospect_id"], note)
+        await state.log_action("outbox_redraft", "dashboard", {
+            "outbox_id": item_id, "to_email": item.get("to_email", ""), "note": note,
+        })
+        return {"success": True, "drafts": n}
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)}, status_code=500)
 

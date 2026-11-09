@@ -518,6 +518,36 @@ def cmd_microsoft(args):
         asyncio.run(_test())
 
 
+async def _redraft(state, args):
+    """Throw away unsent cold drafts so the Writer writes them again."""
+    if args.redraft_all:
+        if args.note:
+            print("\n  --note goes with one draft (--redraft <id>). For a change to every"
+                  "\n  email, edit your email rules (writer.email_rules) instead.\n")
+            return
+        pids = await state.prospects_awaiting_first_review()
+    else:
+        item = await state.get_outbox_item(args.redraft)
+        if not item or item.get("kind") != "sequence":
+            print("\n  No cold email with that id.\n")
+            return
+        pids = [item["prospect_id"]]
+    people = drafts = 0
+    for pid in pids:
+        n = await state.redraft_prospect(pid)
+        if n:
+            people += 1
+            drafts += n
+            if args.note:
+                await state.add_feedback("contact", pid, args.note)
+    if not people:
+        print("\n  Nothing to redraft: only drafts nobody has been sent yet can be written again.\n")
+        return
+    print(f"\n  Threw away {drafts} draft(s) for {people} "
+          f"{'person' if people == 1 else 'people'}. Sellbird writes them again on its next")
+    print("  cycles, in batches of channels.email.max_awaiting_review, using your recent edits.\n")
+
+
 def cmd_outbox(args):
     """Review and approve queued outgoing emails."""
     from sellbird.state import StateManager
@@ -543,6 +573,9 @@ def cmd_outbox(args):
             n = await state.reject_outbox_item(args.reject)
             print(f"\n  {'Rejected.' if n else 'Nothing waiting to send with that id (already sending or sent?).'}\n")
             return
+        if args.redraft or args.redraft_all:
+            await _redraft(state, args)
+            return
 
         paused = await state.get_setting("sending_paused")
         if paused:
@@ -563,7 +596,9 @@ def cmd_outbox(args):
                 print(f"    {line}")
         if pending:
             print("\n  Approve: sellbird outbox --approve <id>   |   all: sellbird outbox --approve-all")
-            print("  Reject:  sellbird outbox --reject <id>\n")
+            print("  Reject:  sellbird outbox --reject <id>")
+            print("  Redraft: sellbird outbox --redraft <id> [--note \"what to change\"]"
+                  "   |   all: --redraft-all\n")
         else:
             print("  Nothing awaiting review.\n")
 
@@ -1206,6 +1241,11 @@ def main():
     sub.add_argument("--approve", metavar="ID", default="", help="Approve one item")
     sub.add_argument("--approve-all", action="store_true", help="Approve all pending")
     sub.add_argument("--reject", metavar="ID", default="", help="Reject one item")
+    sub.add_argument("--redraft", metavar="ID", default="",
+                     help="Throw away this person's unsent drafts and write them again")
+    sub.add_argument("--redraft-all", action="store_true",
+                     help="Redraft everyone whose first email awaits review")
+    sub.add_argument("--note", default="", help="With --redraft: what the new draft should change")
     sub.set_defaults(func=cmd_outbox)
 
     # sellbird sending pause|resume|status

@@ -47,6 +47,8 @@ REVIEW_NEXT_REPLY_KEY = "review_next_reply:"
 # Outbox error prefix for an email autopilot held for a human (gate.
 # autopilot_review): approve-all skips these, they're approved one by one.
 HELD_FOR_REVIEW = "held for your review: "
+# Why a draft was thrown away: the owner asked for it to be written again.
+REDRAFTED = "redrafted"
 # Set while the heartbeat holds sending because replies couldn't all be read
 # (JSON: since, last_seen, reason), so Today and `sellbird status` can say so.
 SENDS_HELD_KEY = "sends_held"
@@ -1346,6 +1348,109 @@ class StateManager:
             )
             await db.commit()
             return cursor.rowcount
+
+    async def count_first_drafts_awaiting_review(self) -> int:
+        """People with a first cold email waiting for review: the Writer's
+        review queue (channels.email.max_awaiting_review)."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(DISTINCT prospect_id) FROM outbox "
+                "WHERE kind = 'sequence' AND step = 1 AND status = 'pending_review'",
+            ) as cursor:
+                return (await cursor.fetchone())[0]
+
+    async def prospects_awaiting_first_review(self) -> list[str]:
+        """Prospect ids whose first cold email is waiting for review."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT DISTINCT prospect_id FROM outbox "
+                "WHERE kind = 'sequence' AND step = 1 AND status = 'pending_review' "
+                "ORDER BY created_at",
+            ) as cursor:
+                return [r[0] for r in await cursor.fetchall()]
+
+    async def redraft_prospect(self, prospect_id: str) -> int:
+        """Throw away a prospect's unsent cold drafts so the Writer writes
+        them again: their queued sequence emails are cancelled ("redrafted"),
+        they leave their campaign and go back to 'new'.
+
+        Only before anything has gone to them: once a cold email is sending
+        or sent, a new first email would be a second one, so nothing changes
+        and 0 comes back. Returns the number of drafts thrown away."""
+        now = _utcnow().isoformat()
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT 1 FROM outbox WHERE prospect_id = ? AND kind = 'sequence' "
+                "AND status IN ('sending', 'sent') LIMIT 1", (prospect_id,),
+            ) as cursor:
+                if await cursor.fetchone():
+                    return 0
+            async with db.execute(
+                "SELECT status FROM prospects WHERE id = ?", (prospect_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None or row[0] not in ("new", "queued"):
+                return 0
+            cursor = await db.execute(
+                "UPDATE outbox SET status = 'cancelled', error = ?, updated_at = ? "
+                "WHERE prospect_id = ? AND kind = 'sequence' "
+                "AND status IN ('pending_review', 'approved')",
+                (REDRAFTED, now, prospect_id),
+            )
+            thrown = cursor.rowcount
+            async with db.execute(
+                "SELECT id, prospect_ids_json FROM campaigns "
+                "WHERE status IN ('draft', 'active') AND prospect_ids_json LIKE ?",
+                (f'%"{prospect_id}"%',),
+            ) as cur:
+                campaigns = await cur.fetchall()
+            for cid, ids_json in campaigns:
+                ids = [i for i in json.loads(ids_json or "[]") if i != prospect_id]
+                await db.execute(
+                    "UPDATE campaigns SET prospect_ids_json = ?, status = CASE WHEN ? "
+                    "THEN 'completed' ELSE status END WHERE id = ?",
+                    (json.dumps(ids), not ids, cid),
+                )
+            await db.execute(
+                "UPDATE prospects SET status = 'new', updated_at = ? "
+                "WHERE id = ? AND status IN ('new', 'queued')", (now, prospect_id),
+            )
+            await db.execute(
+                "DELETE FROM settings WHERE key = ?", ("write_attempts:" + prospect_id,))
+            await db.commit()
+            return thrown
+
+    async def get_draft_edits(self, limit: int = 5) -> list[dict]:
+        """The owner's most recent edits to cold drafts, newest first, as
+        {"before_subject", "before_body", "after_subject", "after_body"}:
+        the Writer's first draft and the text as it stands now (or went
+        out). Drafts the edits left unchanged are skipped."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT a.details_json, a.created_at, o.subject, o.body, o.status
+                   FROM actions a JOIN outbox o
+                     ON o.id = json_extract(a.details_json, '$.outbox_id')
+                   WHERE a.action_type = 'outbox_edited' AND o.kind = 'sequence'
+                     AND o.status IN ('pending_review', 'approved', 'sending', 'sent')
+                   ORDER BY a.created_at ASC""",
+            ) as cursor:
+                rows = await cursor.fetchall()
+        first: dict[str, dict] = {}
+        for r in rows:  # oldest first: the first edit holds the Writer's draft
+            d = json.loads(r["details_json"] or "{}")
+            oid = d.get("outbox_id")
+            if oid not in first:
+                first[oid] = {"before_subject": d.get("old_subject", ""),
+                              "before_body": d.get("old_body", ""),
+                              "after_subject": r["subject"], "after_body": r["body"],
+                              "at": r["created_at"]}
+            else:
+                first[oid]["at"] = r["created_at"]
+        edits = [e for e in first.values()
+                 if (e["before_subject"], e["before_body"]) != (e["after_subject"], e["after_body"])]
+        edits.sort(key=lambda e: str(e["at"]), reverse=True)
+        return edits[:max(0, int(limit))]
 
     async def approve_outbox(self, item_id: str | None = None) -> int:
         """Approve one pending item, or ALL pending when item_id is None.

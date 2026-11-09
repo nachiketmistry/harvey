@@ -1651,14 +1651,18 @@ async function loadOutbox() {
     _desk.unsaved = null;
   }
   if (_desk.i >= pending.length) _desk.i = Math.max(0, pending.length - 1);
-  navCount('nav-outbox', pending.length);
+  // The list holds the first 100; the badge and Approve all use the totals.
+  const waiting = typeof data.pending_total === 'number' ? data.pending_total : pending.length;
+  const held = typeof data.held_total === 'number' ? data.held_total : pending.filter(p => heldReason(p)).length;
+  navCount('nav-outbox', waiting);
+  _desk.total = waiting;
 
   actions.innerHTML =
-    (pending.length && !data.paused
-      ? (pending.length > pending.filter(p => heldReason(p)).length
+    (waiting && !data.paused
+      ? (waiting > held
         ? '<button class="btn btn-primary btn-sm" onclick="outboxApproveAll()" ' +
           'title="Emails Sellbird held are left for you to approve one by one">Approve all ' +
-          (pending.length - pending.filter(p => heldReason(p)).length) + '</button>' : '') : '') +
+          (waiting - held) + '</button>' : '') : '') +
     (data.paused
       ? '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'resume\')">' +
         'Resume sending</button>'
@@ -1897,15 +1901,29 @@ function renderDesk(items, i) {
   const footer = added
     ? '<div class="desk-footer" title="Added when it sends (compliance in sellbird.yaml)">' +
         escHtml(added) + '</div>' : '';
+  const redrafting = _desk.redrafting === cur.id;
+  const redraftBox = redrafting
+    ? '<div class="desk-redraft"><label for="desk-note">What should the new draft do differently? ' +
+        '<span class="muted">(optional, used for this person only)</span></label>' +
+        '<textarea id="desk-note" class="desk-edit-body" rows="3" ' +
+        'placeholder="e.g. Shorter, and lead with the renewal date"></textarea></div>'
+    : '';
   const actions = editing
     ? '<button class="btn btn-primary" onclick="deskSave(' + jsq(cur.id) + ')">Save</button>' +
       '<button class="btn btn-secondary" onclick="deskEdit(null)">Cancel</button>'
+    : redrafting
+    ? '<button class="btn btn-primary" onclick="deskRedraft(' + jsq(cur.id) + ')">Redraft</button>' +
+      '<button class="btn btn-secondary" onclick="deskRedraftAsk(null)">Cancel</button>'
     : '<button class="btn btn-primary" onclick="outboxAct(' + jsq(cur.id) + ',\'approve\')">' +
         'Approve <kbd>A</kbd></button>' +
       '<button class="btn btn-secondary" onclick="deskEdit(' + jsq(cur.id) + ')">' +
         'Edit <kbd>E</kbd></button>' +
       '<button class="btn btn-secondary" onclick="outboxAct(' + jsq(cur.id) + ',\'reject\')">' +
-        'Reject <kbd>R</kbd></button>';
+        'Reject <kbd>R</kbd></button>' +
+      (cur.kind === 'sequence'
+        ? '<button class="btn btn-secondary" onclick="deskRedraftAsk(' + jsq(cur.id) + ')" ' +
+            'title="Throw this draft away and have Sellbird write it again">Redraft <kbd>D</kbd></button>'
+        : '');
 
   return '<div class="desk">' +
     '<div class="desk-list">' + rail + '</div>' +
@@ -1919,12 +1937,33 @@ function renderDesk(items, i) {
           '<div>' + escHtml(heldReason(cur)) + '. Read it before approving: text from a website or an ' +
           'email can try to steer what Sellbird writes.</div></div></div>'
         : '') +
-      draft + footer +
+      draft + footer + redraftBox +
       '<div class="desk-actions">' + actions +
         '<span class="muted" style="font-size:12px;margin-left:auto">' +
-          (i + 1) + ' of ' + items.length + '</span>' +
+          (i + 1) + ' of ' + items.length +
+          (_desk.total > items.length ? ' shown, ' + _desk.total + ' waiting' : '') + '</span>' +
       '</div>' +
     '</div></div>';
+}
+
+function deskRedraftAsk(id) {
+  if (id && deskBusy()) return;
+  _desk.redrafting = id;
+  document.getElementById('outbox-desk').innerHTML = renderDesk(_desk.items, _desk.i);
+  if (id) document.getElementById('desk-note').focus();
+}
+
+async function deskRedraft(id) {
+  const noteEl = document.getElementById('desk-note');
+  const note = noteEl ? noteEl.value.trim() : '';
+  const data = await api('/api/outbox/' + encodeURIComponent(id) + '/redraft', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({note: note}),
+  });
+  _desk.redrafting = null;
+  if (data && data.success) showToast('Thrown away. Sellbird writes it again on a coming cycle.', 'success');
+  else showToast(failMsg(data, 'Redraft failed.'), 'error');
+  loadOutbox();
 }
 
 function deskEdit(id) {
@@ -1984,6 +2023,10 @@ document.addEventListener('keydown', e => {
   if (currentTab !== 'outbox' || e.metaKey || e.ctrlKey || e.altKey) return;
   // Mid-edit, A would approve the stored draft, not what's typed. Only
   // Escape (cancel) works until the edit is saved or cancelled.
+  if (_desk.redrafting) {
+    if (e.key === 'Escape') { e.preventDefault(); deskRedraftAsk(null); }
+    return;
+  }
   if (_desk.editing) {
     const typing = /^(input|textarea)$/i.test(e.target.tagName || '');
     if (e.key === 'Escape') { e.preventDefault(); deskEdit(null); }
@@ -1999,6 +2042,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'a' && cur) { e.preventDefault(); outboxAct(cur.id, 'approve'); }
   else if (k === 'r' && cur) { e.preventDefault(); outboxAct(cur.id, 'reject'); }
   else if (k === 'e' && cur) { e.preventDefault(); deskEdit(cur.id); }
+  else if (k === 'd' && cur && cur.kind === 'sequence') { e.preventDefault(); deskRedraftAsk(cur.id); }
 });
 
 async function outboxAct(id, action) {

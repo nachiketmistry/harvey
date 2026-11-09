@@ -39,6 +39,8 @@ PERSON_VAR = re.compile(r"\{\{\s*(first_?name|last_?name|title)\s*\}\}", re.IGNO
 # Native mode: one Claude call per prospect for email 1, so batches stay
 # small — the rest of the 'new' pool is picked up on later cycles.
 NATIVE_BATCH_CAP = 8
+# How many of the owner's recent draft edits the Writer sees as examples.
+DRAFT_EDIT_EXAMPLES = 5
 LEGACY_BATCH_CAP = 50
 
 # The built-in "how" lines each prompt ends with: email 1 is an observation
@@ -188,6 +190,17 @@ class Writer:
         # who gets written to (and sent) first: the earliest icp.geography
         # entry they're in, then score.
         prospects_with_email = await self._prioritise(prospects_with_email)
+
+        # Review queue: with approval on, draft only enough first emails to
+        # fill channels.email.max_awaiting_review, best prospects first.
+        room = await self._review_room()
+        if room is not None:
+            if room <= 0:
+                logger.info(
+                    "Writer: Review queue is full (channels.email.max_awaiting_review). "
+                    "Waiting for you to review the drafts in the Outbox.")
+                return
+            prospects_with_email = prospects_with_email[:room]
 
         # Batch prospects into campaign groups (by industry/title for relevance)
         batches = self._group_prospects(prospects_with_email)
@@ -436,6 +449,7 @@ class Writer:
         if startup is not None:
             prompt += self._startup_playbook()
         prompt += await self._feedback_block([prospect.id])
+        prompt += await self._edits_block()
         rules = getattr(self, "email_rules", "")
         prompt += operator_rules_block(rules)
         if rules:
@@ -533,6 +547,7 @@ Pricing: {self.config.product.pricing}"""
         # Campaign notes only: this template goes to the whole batch, so a
         # note about one person ("met her at the expo") must never reach it.
         prompt += await self._feedback_block([])
+        prompt += await self._edits_block()
         rules = getattr(self, "email_rules", "")
         prompt += operator_rules_block(rules)
         if rules:
@@ -639,6 +654,37 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         if len(steps) < 3:
             logger.warning(f"Writer: Expected 3 emails, got {len(steps)}.")
         return steps
+
+    async def _review_room(self) -> int | None:
+        """How many more people may get a first draft before the review queue
+        is full, or None when there is no queue (autopilot, or a limit of 0)."""
+        email = self.config.channels.email
+        limit = int(getattr(email, "max_awaiting_review", 0) or 0)
+        if limit <= 0 or not getattr(email, "require_approval", True):
+            return None
+        return limit - await self.state.count_first_drafts_awaiting_review()
+
+    async def _edits_block(self) -> str:
+        """The owner's recent edits to drafts, as before/after examples to
+        write like ("" when there are none). Never stops writing."""
+        try:
+            edits = await self.state.get_draft_edits(limit=DRAFT_EDIT_EXAMPLES)
+        except Exception as e:
+            logger.warning(f"Writer: could not read draft edits: {e}")
+            return ""
+        if not edits:
+            return ""
+        pairs = "\n\n".join(
+            f"BEFORE (your draft):\nSubject: {e['before_subject']}\n{e['before_body'].strip()}\n"
+            f"AFTER (what the owner sent):\nSubject: {e['after_subject']}\n{e['after_body'].strip()}"
+            for e in edits)
+        return (
+            "\n\nOWNER EDITS — recent drafts and how the person running Sellbird rewrote\n"
+            "them, newest first. Work out what they changed and why (length, tone, what\n"
+            "they cut, how they introduce themselves, the ask) and write the way the AFTER\n"
+            "versions do. Don't copy their wording or facts: those were about other people.\n"
+            "They never override the FACTS rule:\n" + pairs
+        )
 
     async def _in_territory(self, prospects: list) -> list:
         """Prospects whose company isn't placed outside icp.geography."""
