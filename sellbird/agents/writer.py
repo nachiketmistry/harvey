@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from sellbird.brain import Brain
 from sellbird.config import EmailRulesError, SellbirdConfig, compliance_of, load_email_rules
 from sellbird.eligibility import excluded
+from sellbird.enrichment import enrich
 from sellbird.geography import CERTAINTY, UNKNOWN, prospect_rank
 from sellbird.humanize import humanize, humanizer_enabled
 from sellbird.integrations.mail_provider import NATIVE_PROVIDERS
@@ -190,6 +191,17 @@ class Writer:
         # who gets written to (and sent) first: the earliest icp.geography
         # entry they're in, then score.
         prospects_with_email = await self._prioritise(prospects_with_email)
+
+        # Look up where the people about to be drafted actually are
+        # (sellbird.enrichment, opt-in), then check and rank them again:
+        # someone found to work out of territory drops out, someone local
+        # moves up.
+        if await self._enrich(prospects_with_email):
+            prospects_with_email = await self._prioritise(
+                await self._eligible(prospects_with_email))
+            if not prospects_with_email:
+                logger.info("Writer: No prospects who may get cold email.")
+                return
 
         # Review queue: with approval on, draft only enough first emails to
         # fill channels.email.max_awaiting_review, best prospects first.
@@ -654,6 +666,27 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         if len(steps) < 3:
             logger.warning(f"Writer: Expected 3 emails, got {len(steps)}.")
         return steps
+
+    async def _enrich(self, prospects: list) -> bool:
+        """Enrichment lookups for the front of the queue. True when any
+        person or company got a location. Never stops writing."""
+        cfg = getattr(self.config, "enrichment", None)
+        if not getattr(cfg, "enabled", False):
+            return False
+        room = await self._review_room()
+        limit = min(int(getattr(cfg, "per_cycle", 0) or 0),
+                    room if room is not None else len(prospects))
+        if limit <= 0:
+            return False
+        try:
+            done = await enrich(self.state, self.config, self.env, prospects, limit)
+        except Exception as e:
+            logger.warning(f"Writer: enrichment failed: {e}")
+            return False
+        if done["looked_up"]:
+            logger.info(f"Writer: looked up {done['looked_up']} prospect(s); "
+                        f"{done['placed']} now placed by where they work.")
+        return bool(done["looked_up"])
 
     async def _review_room(self) -> int | None:
         """How many more people may get a first draft before the review queue

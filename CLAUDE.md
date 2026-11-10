@@ -92,7 +92,8 @@ INSTANTLY_API_KEY=
 # --- Email verification (add at least one; else emails stay 'guess') ---
 REOON_API_KEY=              # 600 free/mo — best free tier
 ZEROBOUNCE_API_KEY=         # 100 free/mo — best for M365/Workspace catch-alls
-HUNTER_API_KEY=             # 50 free/mo + pattern lookup
+HUNTER_API_KEY=             # 50 free/mo + pattern lookup + person/company location
+PDL_API_KEY=                # People Data Labs: 100 lookups/mo free (free plan: person country only)
 
 # --- Discovery (optional — the free OpenStreetMap source needs no key) ---
 TINYFISH_API_KEY=                         # free web search (30/min, 500/hr); no rank signals
@@ -345,6 +346,7 @@ sellbird gmail auth            # One-time Gmail OAuth (when provider: gmail)
 sellbird gmail test            # Verify the Gmail connection
 sellbird contacts --locate EMAIL "City, ST"   # Where a contact works (geography places people by it); --import-locations crm.csv
 sellbird companies --locate DOMAIN "City, Country"   # Where a company is; --import-locations companies.csv
+sellbird enrich --estimate     # Enrichment allowances (Hunter, PDL); --limit N looks up your next N prospects
 sellbird locations             # Resolve free-text locations (tables, then geocoder, cached); lists what needs you
 sellbird outbox                # Review queued emails; --approve <id> / --approve-all / --reject <id> / --redraft <id> [--note] / --redraft-all
 sellbird signals               # The signal vocabulary; --confirm / --reject CODES (or 'free' / 'all')

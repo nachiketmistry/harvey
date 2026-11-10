@@ -341,16 +341,37 @@ async def company_sites(state, company_id: str, location: str = "",
     return await _split_async(state, _site_values(location, rows), source)
 
 
+def _specificity(p: Place) -> int:
+    return (1 if p.country else 0) + (1 if p.region else 0) + (1 if p.city else 0)
+
+
+def _agrees(general: Place, specific: Place) -> bool:
+    """``specific`` refines ``general``: same country, same region if it has one."""
+    return (general.country == specific.country
+            and (not general.region or general.region == specific.region)
+            and (not general.city or _cities(general.city) & _cities(specific.city)))
+
+
 async def person_location(state, prospect_id: str) -> Place | str | None:
-    """The person's location: the most confident PERSON_LOCATION, newest
-    first among equals, as a Place (or older free text), or None."""
+    """The person's location: the most trusted PERSON_LOCATION (newest
+    among equals), refined by a less trusted one that agrees with it and
+    says more: a provider's country plus another's city in that country is
+    the city. Older free text comes back as a string."""
     rows = await state.get_prospect_observations(prospect_id, "PERSON_LOCATION")
     rows = [r for r in rows if (r.get("value_text") or "").strip()]
     if not rows:
         return None
-    best = max(rows, key=lambda r: (float(r.get("confidence") or 0), str(r.get("observed_at") or "")))
-    parsed = parse_places(best["value_text"])
-    return parsed[0] if parsed else None
+    rows.sort(key=lambda r: (float(r.get("confidence") or 0), str(r.get("observed_at") or "")),
+              reverse=True)
+    parsed = parse_places(rows[0]["value_text"])
+    best = parsed[0] if parsed else None
+    if not isinstance(best, Place):
+        return best
+    for r in rows[1:]:
+        other = next(iter(parse_places(r["value_text"])), None)
+        if isinstance(other, Place) and _specificity(other) > _specificity(best) and _agrees(best, other):
+            best = other
+    return best
 
 
 async def prospect_place(state, prospect, config) -> Placement:

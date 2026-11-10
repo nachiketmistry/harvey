@@ -763,6 +763,18 @@ def load_email_rules(config) -> str:
     return text
 
 
+class EnrichmentConfig(BaseModel):
+    """Paid or quota-limited lookups that fill in where people and companies
+    are (sellbird.enrichment). Off until you turn it on: each lookup spends a
+    provider's monthly allowance."""
+    enabled: bool = False
+    # Providers to ask, in order, among those with a key in .env: pdl, hunter.
+    providers: list[str] = ["hunter", "pdl"]
+    # At most this many people looked up per Writer cycle: the ones about to
+    # be drafted, so the allowance goes to your best prospects first.
+    per_cycle: int = 12
+
+
 class SellbirdConfig(BaseModel):
     persona: PersonaConfig
     product: ProductConfig
@@ -772,6 +784,7 @@ class SellbirdConfig(BaseModel):
     brain: BrainConfig = BrainConfig()
     compliance: ComplianceConfig = ComplianceConfig()
     writer: WriterConfig = WriterConfig()
+    enrichment: EnrichmentConfig = EnrichmentConfig()
     # The file it was loaded from, so a running Sellbird can re-read the
     # sending mode from that same file (refresh_sending_mode).
     _source_path: str | None = PrivateAttr(default=None)
@@ -786,6 +799,7 @@ class EnvConfig(BaseModel):
     linkedin_email: str = ""
     linkedin_password: str = ""
     hunter_api_key: str = ""
+    pdl_api_key: str = ""
     serper_api_key: str = ""
     scavio_api_key: str = ""
     tinyfish_api_key: str = ""
@@ -932,6 +946,7 @@ def load_env() -> EnvConfig:
         linkedin_email=os.getenv("LINKEDIN_EMAIL", "").strip(),
         linkedin_password=os.getenv("LINKEDIN_PASSWORD", "").strip(),
         hunter_api_key=os.getenv("HUNTER_API_KEY", "").strip(),
+        pdl_api_key=os.getenv("PDL_API_KEY", "").strip(),
         serper_api_key=os.getenv("SERPER_API_KEY", "").strip(),
         scavio_api_key=os.getenv("SCAVIO_API_KEY", "").strip(),
         tinyfish_api_key=os.getenv("TINYFISH_API_KEY", "").strip(),

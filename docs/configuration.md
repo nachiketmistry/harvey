@@ -35,6 +35,15 @@ Sellbird places each **person**, not just their company, because the point of a 
 
 The entries are also the boundary. A person known to work outside every entry, or whose company is known only to be outside (every site placed and none inside), is not written to, and anything already queued for them is cancelled with the reason "outside your geography". A company with even one office inside your entries isn't ruled out. Set `icp.outside_geography: last` to contact those people after everyone else instead. If any entry is a name Sellbird can't place ("Western Europe" with no `icp.regions` definition), nobody is ruled out. The dashboard's company fit shows which entry a company's footprint falls in, and `sellbird companies` lists out-of-territory companies as Excluded.
 
+**Enrichment providers.** Hunter and People Data Labs keep cleaned, structured records of people and companies. With `enrichment.enabled: true` and a key in `.env` (`HUNTER_API_KEY`, `PDL_API_KEY`), the Writer looks up where the people it's about to draft work, at most `enrichment.per_cycle` a cycle, best prospects first, and each provider at most once per person or company. Answers are stored field by field with the provider's name, below what you and your CRM state; a less trusted source that agrees and says more (another provider's city in the same country) refines a more trusted one. Sellbird counts each provider's monthly allowance itself (`HUNTER_MONTHLY_SEARCHES`, shared with Hunter's other calls; `PDL_MONTHLY_LOOKUPS`, 100 by default, matches only) and stops at zero. `sellbird enrich --estimate` shows what's left; `sellbird enrich --limit 10` runs a batch now. On People Data Labs' free plan a person's city and region are hidden (only country comes back), so it rules people out of territory but can't tell Seattle from Pittsburgh; Hunter returns the city.
+
+```yaml
+enrichment:
+  enabled: true
+  providers: [hunter, pdl]   # in the order to ask
+  per_cycle: 12
+```
+
 **Competitors, customers and partners.** Every company is a prospect until you say otherwise, on its page in the Companies tab (Relationship) or with `sellbird companies --mark DOMAIN competitor --note "why"` (also `customer`, `partner`, or `prospect` to undo). Only prospects get cold email: the Writer skips the rest and anything already queued for them is cancelled on the next cycle. Competitors stay in the register as companies to watch, and the Companies list can show them on their own. One check (`sellbird/eligibility.py`) decides who may get cold email, for the Writer and the Sender alike: relationship first, then geography.
 
 `min_write_score` (0-100, default 0) is the lowest Scout fit score the writer

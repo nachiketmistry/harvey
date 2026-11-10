@@ -495,6 +495,43 @@ async def _locate_companies(args) -> None:
           f"Sellbird; {blank} row(s) had no domain or location.\n")
 
 
+def cmd_enrich(args):
+    """Look up where your next prospects work, with your enrichment providers."""
+    from sellbird.agents.writer import Writer
+    from sellbird.config import load_config, load_env
+    from sellbird.enrichment import PROVIDERS, active_providers, enrich
+    from sellbird.state import StateManager
+
+    async def _enrich():
+        state = StateManager()
+        await state.init_db()
+        config, env = load_config(), load_env()
+        print()
+        for p in PROVIDERS.values():
+            have = "key set" if p.configured(env) else f"no {p.env_key} in .env"
+            print(f"  {p.label:<18} {have}; {await p.remaining(state)} lookup(s) left this month")
+        providers = active_providers(config, env)
+        if not getattr(config.enrichment, "enabled", False):
+            print("\n  Enrichment is off. Turn it on with enrichment.enabled: true in your config.\n")
+            return
+        if not providers:
+            print("\n  No enabled provider has a key in .env.\n")
+            return
+        writer = Writer.__new__(Writer)
+        writer.config, writer.state, writer.env = config, state, env
+        queue = [p for p in await state.get_prospects_by_status("new") if p.email]
+        queue = await writer._prioritise(await writer._eligible(queue))
+        if args.estimate:
+            print(f"\n  {len(queue)} prospect(s) in the queue; this would look up at most "
+                  f"{min(args.limit, len(queue))}, best first, each provider at most once per person.\n")
+            return
+        done = await enrich(state, config, env, queue, args.limit)
+        print(f"\n  Looked up {done['looked_up']} prospect(s); {done['placed']} now placed by where "
+              f"they work ({done['skipped_known']} already known).\n")
+
+    asyncio.run(_enrich())
+
+
 def cmd_locations(args):
     """Resolve free-text locations once (tables, then the geocoder), and
     list what still needs you."""
@@ -1478,6 +1515,12 @@ def main():
     sub.add_argument("microsoft_action", choices=["auth", "test"],
                      help="auth: one-time sign-in; test: verify connection")
     sub.set_defaults(func=cmd_microsoft)
+
+    # sellbird enrich
+    sub = subparsers.add_parser("enrich", help="Look up where your next prospects work (Hunter, PDL)")
+    sub.add_argument("--limit", type=int, default=10, help="At most this many people (default 10)")
+    sub.add_argument("--estimate", action="store_true", help="Show allowances and what would run, then exit")
+    sub.set_defaults(func=cmd_enrich)
 
     # sellbird locations
     sub = subparsers.add_parser("locations", help="Resolve free-text locations; list what needs you")
