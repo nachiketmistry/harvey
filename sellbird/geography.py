@@ -235,6 +235,14 @@ def place(config, person: Place | None = None, sites: list[Place] | None = None,
     """Where a person stands in icp.geography: their own place when known,
     else the company's sites. ``unresolved`` is free text that couldn't be
     placed, carried so the answer can say what needs you."""
+    if person is not None and person.known and not (person.city or person.region):
+        # Only their country (a free-plan provider): it beats the company
+        # when they disagree (a remote engineer abroad), but when the
+        # company has a site in that country, that site is the same answer
+        # with more detail, so it decides (survivorship by specificity).
+        same = [p for p in sites or [] if p is not None and p.known and p.country == person.country]
+        if same:
+            return place(config, None, same, unresolved)
     if person is not None and person.known:
         index, entry = tier_place(person, config)
         return Placement(index, entry, PERSON, outside_place(person, config), person.label())

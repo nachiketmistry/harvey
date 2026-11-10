@@ -35,6 +35,13 @@ from sellbird.storage import BUSY_TIMEOUT_SECONDS  # noqa: E402,F401 (re-exporte
 # Email statuses the Writer drafts for. Shared with the heartbeat so it only
 # chooses write_campaign when there is something the Writer will act on.
 WRITABLE_EMAIL_STATUSES = ("verified", "risky")
+
+
+def writable_statuses(send_to_risky: bool = True) -> tuple[str, ...]:
+    """Email statuses the Writer drafts for: the ones the Sender will send
+    to. A risky (catch-all) address only with channels.email.send_to_risky,
+    or its drafts would wait in the Outbox and never go."""
+    return WRITABLE_EMAIL_STATUSES if send_to_risky else ("verified",)
 # Settings key, per prospect: the user emailed them by hand from the
 # dashboard. Its value is the status they had before, so undo is exact; its
 # presence tells the Sender never to email them as well.
@@ -2610,22 +2617,25 @@ class StateManager:
                         return True
         return False
 
-    async def count_writable_prospects(self) -> int:
+    async def count_writable_prospects(self, send_to_risky: bool = True) -> int:
         """New prospects the Writer can draft for (a deliverable email)."""
-        marks = ",".join("?" for _ in WRITABLE_EMAIL_STATUSES)
+        statuses = writable_statuses(send_to_risky)
+        marks = ",".join("?" for _ in statuses)
         async with self._connect() as db:
             async with db.execute(
                 f"""SELECT COUNT(*) FROM prospects p
                     WHERE status = 'new' AND email != ''
                       AND email_status IN ({marks}) AND NOT {_company_answered('p')}""",
-                WRITABLE_EMAIL_STATUSES,
+                statuses,
             ) as cursor:
                 return (await cursor.fetchone())[0]
 
-    async def count_recent_unusable_prospects(self, hours: int = 24) -> int:
+    async def count_recent_unusable_prospects(self, hours: int = 24,
+                                              send_to_risky: bool = True) -> int:
         """New prospects found in the last ``hours`` that the Writer can't use."""
         since = (_utcnow() - timedelta(hours=hours)).isoformat()
-        marks = ",".join("?" for _ in WRITABLE_EMAIL_STATUSES)
+        statuses = writable_statuses(send_to_risky)
+        marks = ",".join("?" for _ in statuses)
         async with self._connect() as db:
             async with db.execute(
                 f"""SELECT COUNT(*) FROM prospects
@@ -2633,7 +2643,7 @@ class StateManager:
                       AND NOT (COALESCE(email, '') != ''
                                AND COALESCE(email_status, '') IN ({marks}))
                       AND datetime(created_at) >= datetime(?)""",
-                (*WRITABLE_EMAIL_STATUSES, since),
+                (*statuses, since),
             ) as cursor:
                 return (await cursor.fetchone())[0]
 
@@ -3075,7 +3085,7 @@ class StateManager:
 
     # ── Summary for Decision Making ──
 
-    async def get_state_summary(self) -> dict:
+    async def get_state_summary(self, send_to_risky: bool = True) -> dict:
         prospect_counts = await self.count_prospects_by_status()
         today = date.today().isoformat()
         async with self._connect() as db:
@@ -3108,10 +3118,11 @@ class StateManager:
             # The 'new' prospects the Writer can act on. A guessed or invalid
             # address stays 'new' forever, so deciding from the raw count
             # would keep choosing write_campaign with nothing to write.
-            "writable_prospects": await self.count_writable_prospects(),
+            "writable_prospects": await self.count_writable_prospects(send_to_risky),
             # Unusable ones found in the last day: the heartbeat pauses
             # prospecting for the day when these alone fill the backlog.
-            "recent_unusable_prospects": await self.count_recent_unusable_prospects(),
+            "recent_unusable_prospects": await self.count_recent_unusable_prospects(
+                send_to_risky=send_to_risky),
             "draft_campaigns": draft_campaigns,
             "active_campaigns": active_campaigns,
             # The kill switch: native sending stages nothing while it's set.

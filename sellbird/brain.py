@@ -24,6 +24,8 @@ from sellbird.workspace_home import current_home
 
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
 SKILLS_DIR = PROJECT_ROOT / "skills"
+# Merge tags the Sender fills in each email (Sender._render).
+MERGE_TAGS = frozenset({"first_name", "last_name", "company", "title", "personalization"})
 
 # Subprocess safety limits
 DEFAULT_TIMEOUT_SECONDS = 300  # a single Claude call should never hang forever
@@ -687,7 +689,9 @@ class Brain:
         for key, value in kwargs.items():
             template = template.replace(f"{{{{{key}}}}}", str(value))
         # Surface templating mistakes early instead of sending {{foo}} to Claude
-        leftover = re.findall(r"\{\{(\w+)\}\}", template)
+        # Merge tags the model is meant to write into emails (the Sender
+        # fills them per prospect) aren't templating mistakes.
+        leftover = [v for v in re.findall(r"\{\{(\w+)\}\}", template) if v not in MERGE_TAGS]
         if leftover:
             logger.warning(
                 f"Prompt '{prompt_name}' has unfilled variables: {sorted(set(leftover))}"

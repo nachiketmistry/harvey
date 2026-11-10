@@ -23,7 +23,7 @@ from sellbird.geography import CERTAINTY, UNKNOWN, prospect_rank
 from sellbird.humanize import humanize, humanizer_enabled
 from sellbird.integrations.mail_provider import NATIVE_PROVIDERS
 from sellbird.models.campaign import Campaign, EmailStep
-from sellbird.state import WRITABLE_EMAIL_STATUSES, StateManager
+from sellbird.state import StateManager, writable_statuses
 from sellbird.sending_mode import sync_sending_mode
 from sellbird.startups import startup_facts
 from sellbird.untrusted import UNTRUSTED_RULE, fence
@@ -650,13 +650,24 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         # Only write for prospects we can actually deliver to. Guessed and
         # invalid addresses are skipped so we don't spend Claude calls (or
         # sending reputation) on mail that will bounce.
+        # A risky (catch-all) address only when the Sender would send to it
+        # (channels.email.send_to_risky): a draft it never sends just fills
+        # your review queue.
+        risky_ok = bool(getattr(getattr(getattr(self.config, "channels", None), "email", None),
+                                "send_to_risky", True))
+        statuses = writable_statuses(risky_ok)
         prospects_with_email = [
             p for p in new_prospects
-            if p.email and (p.email_status or "guess") in WRITABLE_EMAIL_STATUSES
+            if p.email and (p.email_status or "guess") in statuses
         ]
-        if len(prospects_with_email) < len(new_prospects):
-            skipped["no deliverable email (guessed, invalid or none)"] = (
-                len(new_prospects) - len(prospects_with_email))
+        if not risky_ok:
+            risky = sum(1 for p in new_prospects if p.email and p.email_status == "risky")
+            if risky:
+                skipped["risky (catch-all) email, and channels.email.send_to_risky is off"] = risky
+        unusable = len(new_prospects) - len(prospects_with_email) - skipped.get(
+            "risky (catch-all) email, and channels.email.send_to_risky is off", 0)
+        if unusable:
+            skipped["no deliverable email (guessed, invalid or none)"] = unusable
         # Someone at their company already replied: no cold email to write.
         before = len(prospects_with_email)
         prospects_with_email = [

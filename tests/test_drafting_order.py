@@ -88,3 +88,20 @@ async def test_companies_with_queued_cold_email_are_busy(state):
     await state.add_outbox_item(prospect_id=pid, to_email="jo@acme.example",
                                 subject="s", body="b", send_at="2026-11-10T17:00:00+00:00")
     assert await state.companies_with_live_outreach() == {co}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send_to_risky, expected", [(False, ["Vera"]), (True, ["Vera", "Rita"])])
+async def test_risky_addresses_are_drafted_only_when_they_would_be_sent(state, send_to_risky, expected):
+    cfg = Cfg()
+    cfg.channels.email.send_to_risky = send_to_risky
+    for first, status in (("Vera", "verified"), ("Rita", "risky"), ("Gus", "guess")):
+        await state.add_prospect(Prospect(first_name=first, email=f"{first.lower()}@x{first}.example",
+                                          email_status=status))
+    skipped = {}
+    queue = await Writer(None, state, cfg, Env()).queue(skipped)
+    assert sorted(p.first_name for p in queue) == sorted(expected)
+    assert await state.count_writable_prospects(send_to_risky) == len(expected)
+    if not send_to_risky:
+        assert skipped["risky (catch-all) email, and channels.email.send_to_risky is off"] == 1
+    assert skipped["no deliverable email (guessed, invalid or none)"] == 1

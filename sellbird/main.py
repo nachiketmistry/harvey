@@ -170,7 +170,8 @@ async def decide_next_action(
     stayed open, and one waiting on the prospect can stay open for weeks.
     """
     if summary is None:
-        summary = await state.get_state_summary()
+        summary = await state.get_state_summary(
+            bool(getattr(config.channels.email, "send_to_risky", False)))
 
     # Only prospects the Writer can draft for trigger writing: one with a
     # guessed email stays 'new' for good, and counting it starved Scout.
@@ -401,7 +402,8 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                 action = "quiet_hours_send"
             else:
                 logger.info("Checking pipeline state...")
-                summary = await state.get_state_summary()
+                summary = await state.get_state_summary(
+                    bool(getattr(config.channels.email, "send_to_risky", False)))
                 action = await decide_next_action(brain, state, config, summary=summary)
 
             # 5. Execute — run independent agents in parallel where possible

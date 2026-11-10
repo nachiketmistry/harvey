@@ -211,6 +211,16 @@ def cmd_dashboard(args):
         sys.exit(2)
 
 
+def _send_to_risky() -> bool:
+    """channels.email.send_to_risky, or False when the config can't be read
+    (status must still work then)."""
+    try:
+        from sellbird.config import load_config
+        return bool(getattr(load_config().channels.email, "send_to_risky", False))
+    except Exception:
+        return False
+
+
 def cmd_status(args):
     """Show current pipeline status."""
     from sellbird.state import StateManager
@@ -218,13 +228,15 @@ def cmd_status(args):
     async def _status():
         state = StateManager()
         await state.init_db()
-        summary = await state.get_state_summary()
+        risky_ok = _send_to_risky()
+        summary = await state.get_state_summary(risky_ok)
 
         print("\n  Sellbird Pipeline Status")
         print("  " + "=" * 40)
         print(f"  Prospects:            {summary['prospects']}")
         print(f"  Ready to write for:   {summary.get('writable_prospects', 0)} "
-              "(new, with a verified or catch-all email)")
+              + ("(new, with a verified or catch-all email)" if risky_ok
+                 else "(new, with a verified email)"))
         write_failed = (summary.get("prospects") or {}).get("write_failed", 0)
         if write_failed:
             print(f"  Couldn't write for:   {write_failed} (the model's drafts kept coming back "

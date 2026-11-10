@@ -258,3 +258,22 @@ def test_a_source_declared_to_write_countries_settles_bare_codes():
     # Only that source, and only bare codes: "Dover, DE" is still Delaware.
     assert company_place({"location": "DE", "source": "other"}, [], cfg, declared).unresolved == ("DE",)
     assert company_place({"location": "Dover, DE, USA", "source": "drew-crm"}, [], cfg, declared).tier == 1
+
+
+# ── a country alone doesn't override a more specific company site ──
+
+def test_a_person_known_only_by_country_takes_the_company_site_there():
+    from sellbird.geography import COMPANY, place
+    from sellbird.locations import Place
+    cfg = config(geography=PNW, coords={})
+    seattle = Place(city="Seattle", region="US-WA", country="US")
+    p = place(cfg, Place(country="US"), [seattle])
+    assert (p.tier, p.basis) == (0, COMPANY)
+
+
+def test_a_person_abroad_still_overrides_the_company():
+    from sellbird.geography import PERSON, place
+    from sellbird.locations import Place
+    cfg = config(geography=PNW, coords={})
+    p = place(cfg, Place(country="IN"), [Place(city="Seattle", region="US-WA", country="US")])
+    assert p.basis == PERSON and p.outside
