@@ -614,7 +614,8 @@ def cmd_write(args):
         persona_label = {2: "target title", 1: "other title", 0: "general inbox"}
         segs = configured(config)
         active = [sg.name for sg in segs if sg.status == "active"]
-        order = (f"segment: {' > '.join(active)}, then " if active else "") + \
+        order = (f"target titles first, then segment: {' > '.join(active)}, then "
+                 if active else "") + \
             f"geography: {' > '.join(config.icp.geography or ['anywhere'])}, then fit score"
         print(f"\n  Outreach queue: {len(queue)} contact(s) Sellbird may write to, best first"
               f" ({order}).\n")

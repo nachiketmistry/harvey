@@ -823,10 +823,13 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         return kept
 
     async def _prioritise(self, prospects: list) -> list:
-        """The drafting order, as lead scoring does it (fit plus persona):
-        your segment order first (icp.segments; a company with no segment
-        yet after every segment), then geography tier (your icp.geography
-        order), then whether their
+        """The drafting order, as lead scoring does it (fit plus persona).
+        With segments: people whose title is one their segment targets come
+        first (the right person in a later segment beats the wrong person in
+        an earlier one: a CEO is not who runs Splunk at an 800-person
+        company), then your segment order (icp.segments; a company with no
+        segment yet after every segment). Then geography tier (your
+        icp.geography order), then whether their
         title is one you target (icp.titles), how sure Sellbird is of where
         they are, the company's fit (sellbird.fit), seniority (an owner or
         founder before a VP, so the batch's one person per company is the
@@ -842,9 +845,11 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             except Exception as e:
                 logger.debug(f"Writer: geography rank failed for {p.id}: {e}")
                 tier, certainty = entries, CERTAINTY[UNKNOWN]
-            keys[p.id] = (segment_priority(self.config, segs.get(p.company_id or "", "")),
-                          tier, -persona(p, self.config, segment_by_key(
-                              self.config, segs.get(p.company_id or "", ""))), certainty,
+            key = segs.get(p.company_id or "", "")
+            fit = persona(p, self.config, segment_by_key(self.config, key))
+            keys[p.id] = (bool(segs) and fit < 2,
+                          segment_priority(self.config, key),
+                          tier, -fit, certainty,
                           -fits.get(p.company_id or "", 0),
                           -owner_rank(getattr(p, "title", "") or ""),
                           EMAIL_ORDER.get(getattr(p, "email_status", "") or "", len(EMAIL_ORDER)),

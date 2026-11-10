@@ -226,6 +226,31 @@ async def test_the_writer_drafts_your_segments_in_order(state, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_the_right_person_in_a_later_segment_beats_the_wrong_one_earlier(state, monkeypatch):
+    from sellbird.agents.writer import Writer
+    config = cfg([SegmentConfig(key="in_house", name="In-house", titles=["Splunk Engineer"]),
+                  SegmentConfig(key="partner", name="Partner", titles=["Founder"])])
+    writer = Writer(None, state, config, Env())
+
+    async def rank(*a, **k):
+        return (0, 0)
+    async def fits():
+        return {}
+    monkeypatch.setattr("sellbird.agents.writer.prospect_rank", rank)
+    monkeypatch.setattr(writer, "_company_fits", fits)
+    people = []
+    for domain, key, title in (("ceo.example", "in_house", "Chief Executive Officer"),
+                               ("p.example", "partner", "Founder"),
+                               ("eng.example", "in_house", "Senior Splunk Engineer")):
+        cid = await _company(state, domain)
+        await set_segment(state, cid, key, config)
+        people.append(Prospect(id=domain, first_name="Al", title=title, company_id=cid,
+                               email=f"al@{domain}", email_status="verified"))
+    order = [p.id for p in await writer._prioritise(people)]
+    assert order == ["eng.example", "p.example", "ceo.example"]
+
+
+@pytest.mark.asyncio
 async def test_the_register_shows_segment_headcount_and_why_it_waits(state):
     from sellbird.register import build_register, sqlite_query
     config = cfg()
