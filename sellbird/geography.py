@@ -230,6 +230,18 @@ def _key(p: Place) -> tuple:
     return (p.city.lower(), p.region, p.country)
 
 
+def _inside(specific: Place, broad: Place) -> bool:
+    """``specific`` names a place within ``broad`` and in more detail
+    (Washington, DC, US within US; Seattle, WA within WA)."""
+    if specific.country != broad.country:
+        return False
+    if broad.city:
+        return False                      # a city has nothing finer here
+    if broad.region:
+        return specific.region == broad.region and bool(specific.city)
+    return bool(specific.region or specific.city)
+
+
 def place(config, person: Place | None = None, sites: list[Place] | None = None,
           unresolved: tuple = ()) -> Placement:
     """Where a person stands in icp.geography: their own place when known,
@@ -250,6 +262,10 @@ def place(config, person: Place | None = None, sites: list[Place] | None = None,
     for p in sites or []:
         if p is not None and p.known and _key(p) not in {_key(k) for k in known}:
             known.append(p)
+    # "US" and "Washington, DC, US" from two sources are one site at two
+    # levels of detail, not two sites: a site another, more specific one
+    # falls inside is dropped.
+    known = [p for p in known if not any(_inside(o, p) for o in known if o is not p)]
     if not known:
         return Placement(None, "", UNKNOWN, False, "", tuple(unresolved))
     basis = COMPANY if len(known) == 1 and not unresolved else PRESENCE

@@ -277,3 +277,13 @@ def test_a_person_abroad_still_overrides_the_company():
     cfg = config(geography=PNW, coords={})
     p = place(cfg, Place(country="IN"), [Place(city="Seattle", region="US-WA", country="US")])
     assert p.basis == PERSON and p.outside
+
+
+def test_a_vaguer_site_inside_a_specific_one_is_the_same_site():
+    from sellbird.geography import COMPANY, PRESENCE, place
+    from sellbird.locations import Place
+    cfg = config(geography=PNW, coords={})
+    dc = Place(city="Washington", region="US-DC", country="US")
+    assert place(cfg, None, [Place(country="US"), dc]).basis == COMPANY
+    seattle = Place(city="Seattle", region="US-WA", country="US")
+    assert place(cfg, None, [seattle, dc]).basis == PRESENCE        # two real sites
