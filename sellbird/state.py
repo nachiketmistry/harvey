@@ -563,6 +563,28 @@ MIGRATIONS: list[str] = [
       relationship TEXT NOT NULL, note TEXT DEFAULT '',
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
     """,
+    # ── v18: competitor profiles ──
+    # A competitor is its own record, as in a CRM's Competitor object: it
+    # can be a company Sellbird found (company_id), a vendor it never will,
+    # or a product ("the built-in health checks"). Aliases are the words a
+    # prospect uses for it, matched in replies (a call recorder's keyword
+    # tracker); each mention is a COMPETITOR_MENTIONED observation, so
+    # mentions are a time series per account like every other fact.
+    """
+    CREATE TABLE IF NOT EXISTS competitors (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+      domain TEXT DEFAULT '', company_id TEXT DEFAULT '', battlecard TEXT DEFAULT '',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_competitors_name ON competitors(lower(name));
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_competitors_domain ON competitors(domain) WHERE domain != '';
+    CREATE TABLE IF NOT EXISTS competitor_aliases (competitor_id TEXT NOT NULL,
+      alias TEXT NOT NULL, PRIMARY KEY (competitor_id, alias));
+    INSERT OR IGNORE INTO competitors (id, name, domain, company_id)
+      SELECT lower(hex(randomblob(16))), COALESCE(NULLIF(c.name, ''), c.domain),
+             lower(COALESCE(c.domain, '')), c.id
+      FROM company_relationships r JOIN companies c ON c.id = r.company_id
+      WHERE r.relationship = 'competitor';
+    """,
 ]
 
 BRAIN_PROVIDERS = ("claude", "codex")
@@ -1936,10 +1958,34 @@ class StateManager:
                     "updated_at = excluded.updated_at",
                     (company_id, relationship, note, _utcnow().isoformat()))
             await db.commit()
+        if relationship != "competitor":
+            # No longer a competitor: its profile (battlecard, mentions) stays,
+            # but stops claiming the company's domain, or the profile would
+            # keep it out of outreach after you said it's a prospect.
+            company = await self.get_company(company_id)
+            domain = ((company.domain if company else "") or "").lower()
+            async with self._connect() as db:
+                await db.execute(
+                    "UPDATE competitors SET domain = CASE WHEN domain = ? THEN '' ELSE domain END, "
+                    "company_id = CASE WHEN company_id = ? THEN '' ELSE company_id END "
+                    "WHERE company_id = ? OR (domain != '' AND domain = ?)",
+                    (domain, company_id, company_id, domain))
+                await db.commit()
+        if relationship == "competitor":
+            # A company marked as a competitor gets a profile, to hold its
+            # battlecard and collect what prospects say about it. Unmarking
+            # keeps the profile: its mentions are still history.
+            company = await self.get_company(company_id)
+            if company is not None:
+                await self.save_competitor(company.name or company.domain,
+                                           (company.domain or "").lower(), company_id,
+                                           keep_name=True)
 
     async def get_company_relationship(self, company_id: str) -> dict | None:
         """{"relationship", "note", "updated_at"} for a company, or None for
-        a prospect."""
+        a prospect. A company whose domain is on your competitor list is a
+        competitor even before you mark it, so one found after you added the
+        competitor is never cold-emailed."""
         if not company_id:
             return None
         async with self._connect() as db:
@@ -1949,7 +1995,131 @@ class StateManager:
                 "WHERE company_id = ?", (company_id,),
             ) as cursor:
                 row = await cursor.fetchone()
-        return dict(row) if row else None
+            if row:
+                return dict(row)
+            async with db.execute(
+                "SELECT k.name, k.updated_at FROM competitors k JOIN companies c "
+                "ON c.domain != '' AND lower(c.domain) = k.domain WHERE c.id = ?", (company_id,),
+            ) as cursor:
+                listed = await cursor.fetchone()
+        if listed:
+            return {"relationship": "competitor", "note": "On your competitor list",
+                    "updated_at": listed["updated_at"]}
+        return None
+
+    # ── Competitors ──
+
+    async def save_competitor(self, name: str, domain: str = "", company_id: str = "",
+                              battlecard: str | None = None, keep_name: bool = False) -> str:
+        """Add a competitor, or update the one with this domain or name.
+        Returns its id. A battlecard of None leaves the current one;
+        ``keep_name`` leaves the name you gave it."""
+        name, domain = " ".join(name.split()), domain.strip().lower()
+        if not name:
+            raise ValueError("A competitor needs a name.")
+        now = _utcnow().isoformat()
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT id FROM competitors WHERE (domain != '' AND domain = ?) "
+                "OR lower(name) = lower(?) ORDER BY (domain = ?) DESC LIMIT 1",
+                (domain, name, domain),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row:
+                cid = row["id"]
+                await db.execute(
+                    "UPDATE competitors SET name = CASE WHEN ? THEN name ELSE ? END, domain = CASE WHEN ? != '' THEN ? ELSE domain END, "
+                    "company_id = CASE WHEN ? != '' THEN ? ELSE company_id END, "
+                    "battlecard = COALESCE(?, battlecard), updated_at = ? WHERE id = ?",
+                    (int(keep_name), name, domain, domain, company_id, company_id, battlecard,
+                     now, cid))
+            else:
+                cid = _new_id()
+                await db.execute(
+                    "INSERT INTO competitors (id, name, domain, company_id, battlecard, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (cid, name, domain, company_id, battlecard or "", now, now))
+            await db.commit()
+        return cid
+
+    async def get_competitors(self) -> list[dict]:
+        """Every competitor with its aliases and how often prospects named
+        it, by name."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT k.*, (SELECT COUNT(*) FROM observations o WHERE o.signal_code = "
+                "'COMPETITOR_MENTIONED' AND json_extract(o.value_text, '$.competitor_id') = k.id) "
+                "AS mentions, (SELECT MAX(observed_at) FROM observations o WHERE o.signal_code = "
+                "'COMPETITOR_MENTIONED' AND json_extract(o.value_text, '$.competitor_id') = k.id) "
+                "AS last_mentioned FROM competitors k ORDER BY lower(k.name)"
+            ) as cursor:
+                rows = [dict(r) for r in await cursor.fetchall()]
+            async with db.execute("SELECT competitor_id, alias FROM competitor_aliases "
+                                  "ORDER BY alias") as cursor:
+                aliases: dict[str, list[str]] = {}
+                for r in await cursor.fetchall():
+                    aliases.setdefault(r["competitor_id"], []).append(r["alias"])
+        for r in rows:
+            r["aliases"] = aliases.get(r["id"], [])
+        return rows
+
+    async def find_competitor(self, ref: str) -> dict | None:
+        """A competitor by id, domain or name (any case)."""
+        ref = (ref or "").strip()
+        return next((c for c in await self.get_competitors()
+                     if ref and (c["id"] == ref or c["domain"] == ref.lower()
+                                 or c["name"].lower() == ref.lower())), None)
+
+    async def set_competitor_aliases(self, competitor_id: str, aliases: list[str]) -> None:
+        """Replace a competitor's aliases (stored as typed, matched in any case)."""
+        clean = list(dict.fromkeys(" ".join(a.split()) for a in aliases if a and a.strip()))
+        async with self._connect() as db:
+            await db.execute("DELETE FROM competitor_aliases WHERE competitor_id = ?",
+                             (competitor_id,))
+            await db.executemany(
+                "INSERT OR IGNORE INTO competitor_aliases (competitor_id, alias) VALUES (?, ?)",
+                [(competitor_id, a) for a in clean])
+            await db.execute("UPDATE competitors SET updated_at = ? WHERE id = ?",
+                             (_utcnow().isoformat(), competitor_id))
+            await db.commit()
+
+    async def update_competitor(self, competitor_id: str, name: str, domain: str,
+                                battlecard: str) -> None:
+        """Edit a competitor by id (a rename keeps its aliases and mentions)."""
+        name, domain = " ".join(name.split()), domain.strip().lower()
+        if not name:
+            raise ValueError("A competitor needs a name.")
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE competitors SET name = ?, domain = ?, battlecard = ?, updated_at = ? "
+                "WHERE id = ?", (name, domain, battlecard, _utcnow().isoformat(), competitor_id))
+            await db.commit()
+
+    async def competitor_mentions(self, competitor_id: str, limit: int = 50) -> list[dict]:
+        """Who named this competitor, newest first: the person, their company
+        and what they wrote."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT o.observed_at, o.value_text, o.prospect_id, p.first_name, p.last_name, "
+                "p.email, p.title, c.name AS company, c.id AS company_id FROM observations o "
+                "LEFT JOIN prospects p ON p.id = o.prospect_id "
+                "LEFT JOIN companies c ON c.id = o.company_id "
+                "WHERE o.signal_code = 'COMPETITOR_MENTIONED' "
+                "AND json_extract(o.value_text, '$.competitor_id') = ? "
+                "ORDER BY o.observed_at DESC LIMIT ?", (competitor_id, limit),
+            ) as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
+
+    async def delete_competitor(self, competitor_id: str) -> None:
+        """Remove a competitor profile. Its past mentions stay in observations."""
+        async with self._connect() as db:
+            await db.execute("DELETE FROM competitor_aliases WHERE competitor_id = ?",
+                             (competitor_id,))
+            await db.execute("DELETE FROM competitors WHERE id = ?", (competitor_id,))
+            await db.commit()
 
     async def get_prospect_observations(self, prospect_id: str, signal_code: str) -> list[dict]:
         """A person's observations of one signal, newest first."""

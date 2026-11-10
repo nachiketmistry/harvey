@@ -5,6 +5,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import stat
@@ -674,6 +675,128 @@ async def set_company_relationship(company_id: str, request: Request):
         await state.log_action("company_relationship", "dashboard", {
             "company_id": company_id, "relationship": relationship, "note": note})
         return {"success": True}
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)}, status_code=500)
+
+
+# ── Competitors (sellbird.competitors) ──
+
+
+def _competitor_row(c: dict) -> dict:
+    from sellbird.competitors import terms
+    return {**c, "terms": terms(c), "has_battlecard": bool((c.get("battlecard") or "").strip())}
+
+
+@app.get("/api/competitors")
+async def list_competitors():
+    """Your competitors with how often prospects named them, and whether
+    training wrote battlecards you haven't imported."""
+    from sellbird.competitors import battlecards_from_skill
+    try:
+        state = _state()
+        await state.init_db()
+        rows = [_competitor_row(c) for c in await state.get_competitors()]
+        skill = PROJECT_ROOT / "skills" / "competitive_intel.md"
+        cards = battlecards_from_skill(skill.read_text(encoding="utf-8")) if skill.exists() else []
+        have = {r["name"].lower() for r in rows}
+        return {"competitors": rows,
+                "importable": [n for n, _, _ in cards if n.lower() not in have]}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/competitors/{competitor_id}")
+async def get_competitor(competitor_id: str):
+    """One competitor and who named it, newest first."""
+    try:
+        state = _state()
+        await state.init_db()
+        comp = await state.find_competitor(competitor_id)
+        if comp is None:
+            return JSONResponse({"error": "No such competitor."}, status_code=404)
+        mentions = []
+        for m in await state.competitor_mentions(comp["id"]):
+            try:
+                value = json.loads(m.get("value_text") or "{}")
+            except ValueError:
+                value = {}
+            mentions.append({**{k: v for k, v in m.items() if k != "value_text"},
+                             "term": value.get("term", ""), "excerpt": value.get("excerpt", "")})
+        return {"competitor": _competitor_row(comp), "mentions": mentions}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/competitors")
+async def save_competitor(request: Request):
+    """Add a competitor, or edit one ({"id": ...}). A domain that is a
+    company Sellbird found marks that company as a competitor."""
+    from sellbird.competitors import save_profile
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    name = " ".join(str(body.get("name") or "").split())[:200]
+    if not name:
+        return JSONResponse({"success": False, "message": "Give the competitor a name."}, status_code=400)
+    raw = body.get("aliases")
+    aliases = None
+    if isinstance(raw, list):
+        aliases = [str(a)[:120] for a in raw][:50]
+    elif isinstance(raw, str):
+        aliases = [a[:120] for a in re.split(r"[,\n]", raw)][:50]
+    card = body.get("battlecard")
+    try:
+        state = _state()
+        await state.init_db()
+        cid = await save_profile(state, name, str(body.get("domain") or "")[:253], aliases,
+                                 None if card is None else str(card)[:20000],
+                                 competitor_id=str(body.get("id") or ""), source="dashboard")
+        return {"success": True, "id": cid}
+    except ValueError as e:
+        return JSONResponse({"success": False, "message": str(e)}, status_code=400)
+    except Exception as e:
+        # Two competitors can't share a name or a domain.
+        msg = str(e)
+        if "UNIQUE" in msg:
+            msg = "Another competitor already has that name or domain."
+        return JSONResponse({"success": False, "message": msg}, status_code=400 if "UNIQUE" in str(e) else 500)
+
+
+@app.delete("/api/competitors/{competitor_id}")
+async def delete_competitor(competitor_id: str):
+    """Remove a competitor profile. Its mentions stay on record, and a
+    company you marked as a competitor stays marked."""
+    try:
+        state = _state()
+        await state.init_db()
+        if await state.find_competitor(competitor_id) is None:
+            return JSONResponse({"success": False, "message": "No such competitor."}, status_code=404)
+        await state.delete_competitor(competitor_id)
+        return {"success": True}
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)}, status_code=500)
+
+
+@app.post("/api/competitors/import")
+async def import_battlecards():
+    """Add each battlecard training wrote (skills/competitive_intel.md) as a
+    competitor, keeping aliases you already gave them."""
+    from sellbird.competitors import battlecards_from_skill
+    try:
+        skill = PROJECT_ROOT / "skills" / "competitive_intel.md"
+        if not skill.exists():
+            return JSONResponse({"success": False, "message": "No skills/competitive_intel.md yet."},
+                                status_code=404)
+        state = _state()
+        await state.init_db()
+        cards = battlecards_from_skill(skill.read_text(encoding="utf-8"))
+        for name, aliases, card in cards:
+            cid = await state.save_competitor(name, battlecard=card)
+            kept = (await state.find_competitor(cid) or {}).get("aliases") or []
+            await state.set_competitor_aliases(cid, kept + aliases)
+        return {"success": True, "imported": len(cards)}
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)}, status_code=500)
 

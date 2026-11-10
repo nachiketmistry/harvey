@@ -4,7 +4,7 @@
 
 This is the part that makes Sellbird different from a black box, and it is deliberately not skippable.
 
-Sellbird knows how to collect **32 signals** about a business. It does not collect any of them until you say so. On first run it *proposes* the catalog; you confirm, skip, or reject each one in the dashboard or from the terminal:
+Sellbird knows how to collect **33 signals** about a business. It does not collect any of them until you say so. On first run it *proposes* the catalog; you confirm, skip, or reject each one in the dashboard or from the terminal:
 
 ```bash
 sellbird signals                       # review the catalog

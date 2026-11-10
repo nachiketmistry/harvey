@@ -416,6 +416,7 @@ function loadCurrentTab() {
     case 'discover': loadDiscoverProviders(); break;
     case 'companies': if (!companyDrill) loadCompanies(); break;
     case 'prospects': loadProspects(); break;
+    case 'competitors': loadCompetitors(); break;
     case 'campaigns': loadCampaigns(); break;
     case 'outbox': loadOutbox(); break;
     case 'conversations': loadConversations(); break;
@@ -2229,6 +2230,139 @@ async function saveRelationship(id) {
   if (j >= 0) showCompanyContacts(j); else if (i >= 0) loadCompanies();
 }
 
+// ── Competitors (sellbird.competitors) ──
+// A list of profiles, and one profile at a time: its name, domain, the words
+// that name it in a reply, your battlecard, and who named it.
+
+let _competitors = [];
+
+async function loadCompetitors() {
+  const el = document.getElementById('competitors-list');
+  const actions = document.getElementById('competitors-actions');
+  const data = await api('/api/competitors');
+  if (!data || data.error) { el.innerHTML = data ? emptyState(icon('alert'), 'Couldn\'t load competitors', escHtml(data.error)) : offlineState(); return; }
+  _competitors = data.competitors || [];
+  const importable = data.importable || [];
+  actions.innerHTML = (importable.length
+    ? '<button class="btn btn-secondary btn-sm" onclick="importBattlecards(this)" title="' +
+        escHtml(importable.join(' · ')) + '">Import ' + importable.length + ' battlecard' +
+        (importable.length === 1 ? '' : 's') + ' from training</button>' : '') +
+    '<button class="btn btn-primary btn-sm" onclick="showCompetitor(\'\')">' + icon('plus') + 'Add competitor</button>';
+  if (!_competitors.length) {
+    el.innerHTML = emptyState(icon('flag'), 'No competitors yet',
+      'Add one here, or mark a company as a competitor on its <b>Companies</b> page. ' +
+      'Sellbird then spots it when a prospect names it in a reply, and answers with your battlecard.');
+    return;
+  }
+  let html = '<div class="table-card"><table><thead><tr><th>Competitor</th><th>Battlecard</th>' +
+    '<th>Spotted in replies as</th><th class="num">Named</th><th>Last named</th></tr></thead><tbody>';
+  _competitors.forEach(c => {
+    html += '<tr class="clickable" onclick="showCompetitor(' + jsq(c.id) + ')">' +
+      '<td><div class="cell-stack"><span class="cell-main">' + escHtml(c.name) + '</span>' +
+        (c.domain ? '<span class="cell-sub">' + escHtml(c.domain) + '</span>' : '') + '</div></td>' +
+      '<td>' + (c.has_battlecard ? '<span class="tag">Written</span>' : '<span class="muted">None</span>') + '</td>' +
+      '<td class="competitor-terms">' + escHtml((c.terms || []).join(', ')) + '</td>' +
+      '<td class="num">' + (c.mentions || 0) + '</td>' +
+      '<td class="muted">' + (c.last_mentioned ? relTime(c.last_mentioned) : 'Never') + '</td></tr>';
+  });
+  el.innerHTML = html + '</tbody></table></div>';
+}
+
+async function importBattlecards(btn) {
+  btn.disabled = true;
+  const data = await api('/api/competitors/import', {method: 'POST'});
+  if (!data || !data.success) { btn.disabled = false; showToast(failMsg(data, 'Could not import.'), 'error'); return; }
+  showToast('Imported ' + data.imported + ' battlecard' + (data.imported === 1 ? '' : 's') + '.', 'success');
+  loadCompetitors();
+}
+
+async function showCompetitor(id) {
+  const el = document.getElementById('competitors-list');
+  let comp = {id: '', name: '', domain: '', aliases: [], battlecard: '', terms: []}, mentions = [];
+  if (id) {
+    const data = await api('/api/competitors/' + encodeURIComponent(id));
+    if (!data || data.error) { showToast(failMsg(data, 'Could not open that competitor.'), 'error'); return; }
+    comp = data.competitor; mentions = data.mentions || [];
+  }
+  const field = (fid, label, input, hint) => '<div class="form-group"><label class="form-label" for="' + fid + '">' +
+    label + '</label>' + input + (hint ? '<div class="form-hint">' + hint + '</div>' : '') + '</div>';
+  let html = '<button class="btn btn-ghost btn-sm" onclick="loadCompetitors()" style="margin-bottom:12px">' +
+    '&larr; All competitors</button>' +
+    '<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>' +
+      escHtml(comp.name || 'New competitor') + '</h3>' +
+      (id ? '<span class="meta">Named in ' + mentions.length + ' repl' + (mentions.length === 1 ? 'y' : 'ies') + '</span>' : '') +
+    '</div>' +
+    '<div class="form-row">' +
+      field('comp-name', 'Name', '<input class="form-input" id="comp-name" maxlength="200" value="' + escHtml(comp.name) + '">') +
+      field('comp-domain', 'Website domain <span class="optional-tag">optional</span>',
+        '<input class="form-input" id="comp-domain" maxlength="253" placeholder="competitor.example" value="' + escHtml(comp.domain) + '">') +
+    '</div>' +
+    field('comp-aliases', 'Other names <span class="optional-tag">optional</span>',
+      '<textarea class="form-input" id="comp-aliases" rows="3" placeholder="One per line, e.g. a product name or a nickname">' +
+        escHtml((comp.aliases || []).join('\n')) + '</textarea>',
+      'Sellbird spots a competitor in a reply by its name, its domain and these (3 letters or more), as whole words in any case.' +
+      (comp.terms && comp.terms.length ? ' Now: ' + escHtml(comp.terms.join(', ')) + '.' : '')) +
+    field('comp-card', 'Battlecard <span class="optional-tag">optional</span>',
+      '<textarea class="form-input mono" id="comp-card" rows="12" maxlength="20000" placeholder="How you win, where they\'re weak, and what to say when a prospect says they use them">' +
+        escHtml(comp.battlecard || '') + '</textarea>',
+      'Goes into Sellbird\'s answer whenever a prospect names this competitor. Markdown is fine.') +
+    '<div class="form-actions"><button class="btn btn-primary" onclick="saveCompetitor(' + jsq(comp.id) + ')">Save</button>' +
+      (id ? '<button class="btn btn-danger" id="comp-remove" onclick="removeCompetitor(' + jsq(comp.id) + ', this)">Remove</button>' : '') +
+    '</div>' +
+    (comp.domain ? '<div class="form-hint" style="margin-top:12px">' + escHtml(comp.domain) +
+      ' is never cold-emailed, and anything queued for it is cancelled on Sellbird\'s next cycle.</div>' : '') +
+    '</div>';
+  if (id) {
+    html += '<div class="card flush"><div class="card-head"><h3>Who named it</h3></div>';
+    if (!mentions.length) {
+      html += '<div class="empty"><div class="copy">No prospect has named it in a reply yet.</div></div></div>';
+    } else {
+      html += '<table><thead><tr><th>Person</th><th>What they wrote</th><th>When</th></tr></thead><tbody>';
+      for (const m of mentions) {
+        const who = [m.first_name, m.last_name].filter(Boolean).join(' ') || m.email || 'Unknown';
+        html += '<tr><td><div class="cell-stack"><span class="cell-main">' + escHtml(who) + '</span>' +
+          '<span class="cell-sub">' + escHtml([m.title, m.company].filter(Boolean).join(' · ')) + '</span></div></td>' +
+          '<td class="competitor-excerpt">' + escHtml(m.excerpt) + '</td>' +
+          '<td class="muted">' + relTime(m.observed_at) + '</td></tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+  }
+  el.innerHTML = html;
+  if (!id) document.getElementById('comp-name').focus();
+}
+
+async function saveCompetitor(id) {
+  const body = {
+    id: id,
+    name: document.getElementById('comp-name').value.trim(),
+    domain: document.getElementById('comp-domain').value.trim(),
+    aliases: document.getElementById('comp-aliases').value,
+    battlecard: document.getElementById('comp-card').value,
+  };
+  if (!body.name) { showToast('Give the competitor a name.', 'error'); return; }
+  const data = await api('/api/competitors', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (!data || !data.success) { showToast(failMsg(data, 'Could not save.'), 'error'); return; }
+  showToast('Saved ' + body.name + '.', 'success');
+  showCompetitor(data.id);
+}
+
+// Two clicks, no browser dialog: the first arms the button, the second removes.
+async function removeCompetitor(id, btn) {
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = '1';
+    btn.textContent = 'Click again to remove';
+    setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = 'Remove'; } }, 4000);
+    return;
+  }
+  const data = await api('/api/competitors/' + encodeURIComponent(id), {method: 'DELETE'});
+  if (!data || !data.success) { showToast(failMsg(data, 'Could not remove.'), 'error'); return; }
+  showToast('Removed. Its past mentions stay on record.', 'success');
+  loadCompetitors();
+}
+
 async function showCompanyContacts(index) {
   const company = _companies[index];
   if (!company) return;
@@ -3224,6 +3358,7 @@ setInterval(() => {
     case 'today': loadToday(); loadTrend(); loadFunnel(); loadRuns(); loadTodayActivity(); break;
     case 'companies': if (!companyDrill) loadCompanies(); break;
     case 'prospects': loadProspects(); break;
+    case 'competitors': loadCompetitors(); break;
     case 'campaigns': loadCampaigns(); break;
     case 'conversations': loadConversations(); break;
     case 'activity': loadActivity(); break;

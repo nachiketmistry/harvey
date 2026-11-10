@@ -495,6 +495,84 @@ async def _locate_companies(args) -> None:
           f"Sellbird; {blank} row(s) had no domain or location.\n")
 
 
+def cmd_competitors(args):
+    """Your competitors: list them, add one, set its aliases and battlecard."""
+    from pathlib import Path
+
+    from sellbird.competitors import battlecards_from_skill, save_profile, terms
+    from sellbird.state import StateManager
+
+    async def _competitors():
+        state = StateManager()
+        await state.init_db()
+        if args.import_battlecards is not None:
+            path = Path(args.import_battlecards or "skills/competitive_intel.md")
+            if not path.exists():
+                print(f"\n  No file at {path}.\n")
+                return
+            cards = battlecards_from_skill(path.read_text(encoding="utf-8"))
+            for name, aliases, card in cards:
+                cid = await state.save_competitor(name, battlecard=card)
+                kept = (await state.find_competitor(cid) or {}).get("aliases") or []
+                await state.set_competitor_aliases(cid, kept + aliases)
+            if not cards:
+                print(f"\n  No battlecards in {path} (looked for '## vs. NAME' sections).\n")
+                return
+            print(f"\n  {len(cards)} battlecard(s) from {path}. Each is matched in replies by its"
+                  "\n  name and aliases; add the words prospects actually use with --aliases-for.\n")
+            await _list(state)
+            return
+        if args.add:
+            await save_profile(state, args.add, args.domain,
+                               args.aliases.split(",") if args.aliases else None,
+                               note=args.note, source="cli")
+            print(f"\n  {args.add} is on your competitor list" +
+                  (f"; {args.domain} gets no cold email" if args.domain else "") + ".\n")
+            return
+        ref = args.aliases_for or args.battlecard_for or args.remove
+        if ref:
+            comp = await state.find_competitor(ref[0] if isinstance(ref, list) else ref)
+            if comp is None:
+                print(f"\n  No competitor called {ref[0] if isinstance(ref, list) else ref}. "
+                      "See: sellbird competitors\n")
+                return
+            if args.remove:
+                await state.delete_competitor(comp["id"])
+                print(f"\n  Removed {comp['name']} (its past mentions stay on record). A company "
+                      "you marked as a competitor stays marked: sellbird companies --mark DOMAIN prospect\n")
+            elif args.aliases_for:
+                await state.set_competitor_aliases(comp["id"], args.aliases_for[1].split(","))
+                comp = await state.find_competitor(comp["id"])
+                print(f"\n  {comp['name']} is matched in replies by: {', '.join(terms(comp))}\n")
+            else:
+                path = Path(args.battlecard_for[1])
+                if not path.exists():
+                    print(f"\n  No file at {path}.\n")
+                    return
+                await state.save_competitor(comp["name"], battlecard=path.read_text(encoding="utf-8"))
+                print(f"\n  Battlecard for {comp['name']} saved from {path}.\n")
+            return
+        await _list(state)
+
+    async def _list(state):
+        rows = await state.get_competitors()
+        if not rows:
+            print("\n  No competitors yet. Mark a company (sellbird companies --mark DOMAIN competitor),"
+                  "\n  add one (sellbird competitors --add NAME --domain DOMAIN), or import the battle"
+                  "\n  cards training wrote (sellbird competitors --import-battlecards).\n")
+            return
+        print()
+        for c in rows:
+            seen = f"named {c['mentions']}x, last {c['last_mentioned'][:10]}" if c["mentions"] else "never named"
+            card = "battlecard" if (c["battlecard"] or "").strip() else "no battlecard"
+            name = c["name"] if len(c["name"]) <= 40 else c["name"][:39] + "…"
+            print(f"  {name:<40} {c['domain'] or '-':<22} {card:<14} {seen}")
+            print(f"  {'':<40} matched by: {', '.join(terms(c))}")
+        print()
+
+    asyncio.run(_competitors())
+
+
 def cmd_enrich(args):
     """Look up where your next prospects work, with your enrichment providers."""
     from sellbird.agents.writer import Writer
@@ -1503,6 +1581,21 @@ def main():
                      help="CSV with domain plus city/state/country (or one location) columns, e.g. a CRM export")
     sub.add_argument("--out", default="", help="Output file (default: data/exports/company-register-<date>.csv)")
     sub.set_defaults(func=cmd_companies)
+
+    # sellbird competitors
+    sub = subparsers.add_parser("competitors", help="Your competitors: aliases, battlecards, who named them")
+    sub.add_argument("--add", metavar="NAME", default="", help="Add a competitor (a company or a product)")
+    sub.add_argument("--domain", default="", help="With --add: its website domain; that company gets no cold email")
+    sub.add_argument("--aliases", default="", help='With --add: other names, comma-separated, e.g. "DS, Deslicer AI"')
+    sub.add_argument("--note", default="", help="With --add --domain: why, kept on the company")
+    sub.add_argument("--aliases-for", nargs=2, metavar=("NAME", "ALIASES"),
+                     help="Replace a competitor's aliases (comma-separated)")
+    sub.add_argument("--battlecard-for", nargs=2, metavar=("NAME", "FILE"),
+                     help="Set a competitor's battlecard from a markdown file")
+    sub.add_argument("--import-battlecards", nargs="?", const="", default=None, metavar="FILE",
+                     help="Add each '## vs. NAME' section as a competitor (default skills/competitive_intel.md)")
+    sub.add_argument("--remove", metavar="NAME", default="", help="Remove a competitor profile")
+    sub.set_defaults(func=cmd_competitors)
 
     # sellbird gmail auth|test
     sub = subparsers.add_parser("gmail", help="Gmail provider setup")

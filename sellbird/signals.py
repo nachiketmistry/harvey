@@ -398,6 +398,22 @@ SIGNAL_CATALOG: list[dict] = [
         "confidence_floor": 0.0,
     },
 
+    {
+        "code": "COMPETITOR_MENTIONED",
+        "label": "Named a competitor",
+        "description": (
+            "A reply that names one of your competitors (its name, domain or an "
+            "alias you gave it), with the words they used. Recorded on the person "
+            "and their company, and the competitor's battlecard goes into the "
+            "answer. Matched in Sellbird, with no model call."
+        ),
+        "category": "people",
+        "value_type": "text",
+        "collector": "handler",
+        "cost_note": "free (read from replies)",
+        "confidence_floor": 0.0,
+    },
+
     # ── Verification ──
     {
         "code": "EMAIL_PATTERN",

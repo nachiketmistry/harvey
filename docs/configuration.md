@@ -46,6 +46,17 @@ enrichment:
 
 **Competitors, customers and partners.** Every company is a prospect until you say otherwise, on its page in the Companies tab (Relationship) or with `sellbird companies --mark DOMAIN competitor --note "why"` (also `customer`, `partner`, or `prospect` to undo). Only prospects get cold email: the Writer skips the rest and anything already queued for them is cancelled on the next cycle. Competitors stay in the register as companies to watch, and the Companies list can show them on their own. One check (`sellbird/eligibility.py`) decides who may get cold email, for the Writer and the Sender alike: relationship first, then geography.
 
+**Competitor profiles.** A competitor is its own record on the **Competitors** tab (or `sellbird competitors`): a name, an optional domain, the other names prospects use for it, and a battlecard you write. It can be a company Sellbird found (marking one creates its profile), a vendor it never will, or a product such as a built-in tool. A company whose domain is on the list is never cold-emailed, even one Sellbird finds later. Every reply is matched against each competitor's name, domain and aliases (whole words, any case, 3 letters or more, in Sellbird with no model call). A match is recorded as a `COMPETITOR_MENTIONED` observation on the person and their company, with the words they used, and that competitor's battlecard goes into the prompt for the answer. The profile shows who named it and when. To start from the battle cards `sellbird train` wrote, use **Import from training** on the tab or `sellbird competitors --import-battlecards`: each `## vs. NAME` section becomes a competitor, with the names in its heading (`A / B`, `(e.g., C, D)`) as aliases.
+
+```bash
+sellbird competitors                                   # list, with what each is matched by and how often it was named
+sellbird competitors --add "Rival" --domain rival.example --aliases "Rival Pro, RivalAI"
+sellbird competitors --aliases-for "Rival" "Rival Pro, RivalAI"
+sellbird competitors --battlecard-for "Rival" rival.md
+sellbird competitors --import-battlecards              # from skills/competitive_intel.md
+sellbird competitors --remove "Rival"                  # its past mentions stay on record
+```
+
 `min_write_score` (0-100, default 0) is the lowest Scout fit score the writer
 drafts for: a prospect below it keeps its deliverable address but gets no
 sequence, so Claude calls and sends go to the best matches first.

@@ -142,6 +142,13 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
             + one.format(col="company_id"), args)}
     except Exception:  # a database from before v17, not yet migrated
         relationships = {}
+    try:
+        # On your competitor list by domain, marked or not
+        # (StateManager.get_company_relationship).
+        listed = {r["domain"] for r in await query_db(
+            "SELECT domain FROM competitors WHERE domain != ''")}
+    except Exception:  # before v18
+        listed = set()
     by_p: dict[str, list] = {}
     by_o: dict[str, list] = {}
     by_obs: dict[str, list] = {}
@@ -157,7 +164,9 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
         cid = c["id"]
         ps, obs = by_p.get(cid, []), by_obs.get(cid, [])
         fit, reasons = company_fit(c, ps, obs, config, dnc, places)
-        rel = relationships.get(cid) or {}
+        rel = relationships.get(cid) or (
+            {"relationship": "competitor", "note": "On your competitor list"}
+            if (c.get("domain") or "").lower() in listed and c.get("domain") else {})
         status, why = company_status(c, ps, by_o.get(cid, []), obs, dnc, send_to_risky,
                                      config=config, relationship=rel, places=places)
         sector, area = c.get("industry") or "", c.get("location") or ""

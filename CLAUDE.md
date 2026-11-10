@@ -54,7 +54,7 @@ People will ask "how does this work?" — explain it simply:
 
 - **"Can it use ChatGPT / Codex instead of Claude?"** → Yes, opt-in. Install Codex CLI 0.159.3 (`npm install -g @openai/codex@0.159.3`; other versions are refused), run `codex login` with ChatGPT, and set `brain: { provider: codex, model: gpt-5.5 }` in sellbird.yaml (or choose codex in `sellbird setup`, which suggests gpt-5.5, or `sellbird train <url> --provider codex --model gpt-5.5`). gpt-5.5 is the verified text-only model; a blank model fails on current accounts because the live catalog hides it, and code-mode models are refused. Claude stays the default; Sellbird never switches providers on its own. Each Codex call runs isolated with no tools — see docs/codex.md. macOS and Linux only; on Windows, Codex is refused, so use Claude. Don't edit the user's own `~/.codex` config to make it work.
 
-- **"What's the dashboard?"** → Have the user run `sellbird dashboard` in their own terminal and open the private link it prints (`http://127.0.0.1:5555/#token=…`; `sellbird dashboard --url` prints it again). Don't read, print or repeat the token yourself: it unlocks the dashboard. It opens on **Today** — anything waiting on a decision, then the pipeline. Tabs for Signals, Companies, Contacts, Campaigns, Outbox, Conversations, Activity, Usage, Settings.
+- **"What's the dashboard?"** → Have the user run `sellbird dashboard` in their own terminal and open the private link it prints (`http://127.0.0.1:5555/#token=…`; `sellbird dashboard --url` prints it again). Don't read, print or repeat the token yourself: it unlocks the dashboard. It opens on **Today** — anything waiting on a decision, then the pipeline. Tabs for Signals, Companies, Contacts, Competitors, Campaigns, Outbox, Conversations, Activity, Usage, Settings.
 
 - **"What are signals?"** → Signals are the facts Sellbird collects about a business: who its current agency is, whether it's running ads, whether it has online booking, how it ranks. **Sellbird proposes; you confirm.** Nothing is collected until the user says yes on the Signals tab (or `sellbird signals --confirm ...`). That keeps spend intentional and makes every prospect list explainable — a cohort is a query over signals a human chose, not a black box.
 
@@ -180,7 +180,7 @@ Ask the user these questions and build `sellbird.yaml` and `skills/product_knowl
 
 ### Step 4: Confirm Signals
 
-Sellbird ships a catalog of 32 signals it knows how to collect, all **proposed** and
+Sellbird ships a catalog of 33 signals it knows how to collect, all **proposed** and
 none active. Nothing is prospected against until the user confirms them.
 
 Send them to `sellbird dashboard` → **Signals**, where each one shows a
@@ -294,7 +294,7 @@ Users will come back with questions and tasks. Common ones:
 - **"Show me what Sellbird has done"** → Run `sellbird status` or `sellbird dashboard`
 - **"Am I warmed up?" / "Why am I landing in spam?"** → Run `sellbird warmup`. Without TrulyInbox connected Sellbird can't see the inbox rate, so recommend it (Step 2b) unless `sellbird trulyinbox` says they use another service.
 - **"The emails aren't good"** → Edit `skills/email_frameworks.md` and `prompts/writer.md`. Show them the current rules and help them adjust. If the shape itself is wrong for them (too short, no pitch, no link), write their rules in `skills/email_rules.md` and set `writer.email_rules: "skills/email_rules.md"`: it replaces the built-in shape (docs/skills-and-agents.md, "Your own email shape").
-- **"Why is a competitor / customer on my list?"** → Mark it: Companies tab → the company → Relationship, or `sellbird companies --mark DOMAIN competitor`. Only prospects get cold email; queued email to the rest is cancelled next cycle, and the Companies list can show competitors on their own.
+- **"Why is a competitor / customer on my list?"** → Mark it: Companies tab → the company → Relationship, or `sellbird companies --mark DOMAIN competitor`. Only prospects get cold email; queued email to the rest is cancelled next cycle, and the Companies list can show competitors on their own. Each competitor also gets a profile on the **Competitors** tab (`sellbird competitors`): aliases and a battlecard. When a reply names one, Sellbird records it and answers with that battlecard.
 - **"Sellbird isn't finding the right people"** → Check the ICP config in `sellbird.yaml`. Adjust industries, titles, company_size, geography.
 - **"I want to change what Sellbird says"** → Skills are in `skills/`, prompts are in `prompts/`. Both are plain markdown files. Edit them directly.
 - **"Train Sellbird on a different product"** → `sellbird train <new-url>`
@@ -344,6 +344,7 @@ sellbird companies             # Company register CSV: every company, its fit sc
 sellbird companies --mark DOMAIN competitor [--note why]   # Or customer/partner: never cold-emailed (prospect undoes it)
 sellbird gmail auth            # One-time Gmail OAuth (when provider: gmail)
 sellbird gmail test            # Verify the Gmail connection
+sellbird competitors           # Competitor profiles; --add NAME --domain D / --aliases-for / --battlecard-for / --import-battlecards
 sellbird contacts --locate EMAIL "City, ST"   # Where a contact works (geography places people by it); --import-locations crm.csv
 sellbird companies --locate DOMAIN "City, Country"   # Where a company is; --import-locations companies.csv
 sellbird enrich --estimate     # Enrichment allowances (Hunter, PDL); --limit N looks up your next N prospects

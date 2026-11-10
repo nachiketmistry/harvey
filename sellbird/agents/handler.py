@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from sellbird.booking import booking_instruction
 from sellbird.brain import Brain, BrainUnavailable
+from sellbird.competitors import battlecard_block, mentions_in, record_mentions
 from sellbird.config import (
     DEFAULT_OPT_OUT_LINE, PREVIOUS_DEFAULT_OPT_OUT_LINE, SellbirdConfig, EnvConfig, compliance_of, legacy_sending_held,
     live_do_not_contact,
@@ -749,6 +750,9 @@ class Handler:
         stripped = strip_quoted_reply(reply_text) or reply_text
         reply_text = ours.remove(stripped).strip() or stripped
         escalate = _escalates(keyword_text)
+        # Competitors they named, in their own lines only (ours are removed,
+        # so our email naming a competitor isn't their mention).
+        mentions, competitors = await mentions_in(self.state, their_text)
 
         if prospect.status == "opted_out":
             await self._record_after_opt_out(prospect, reply_text, campaign_id, escalate)
@@ -821,7 +825,9 @@ class Handler:
                                       live_do_not_contact(self.config))
         response = ""
         if intent in AUTO_REPLY_INTENTS and not held and not listed and not handed_off:
-            response = await self._generate_response(intent, reply_text, prospect, convo)
+            response = await self._generate_response(
+                intent, reply_text, prospect, convo,
+                competitors=battlecard_block(mentions, competitors))
 
         # 2c. Store the conversation in one write.
         if stored is None:
@@ -838,6 +844,13 @@ class Handler:
             await self.state.update_conversation(convo.id, mailbox_id=reply_meta["mailbox_id"])
         if convo.stage != old_stage:
             logger.info(f"Handler: Stage for {lead_email}: {old_stage} -> {convo.stage}")
+        if mentions:
+            try:
+                await record_mentions(self.state, prospect, mentions)
+                logger.info(f"Handler: {lead_email} named "
+                            + ", ".join(m.name for m in mentions))
+            except Exception as e:
+                logger.warning(f"Handler: couldn't record a competitor mention: {e}")
 
         # 3. Route based on intent
         if intent == "unsubscribe":
@@ -1284,7 +1297,8 @@ Respond with ONLY the category label, nothing else."""
         return current_stage
 
     async def _generate_response(
-        self, intent: str, reply_text: str, prospect, convo: Conversation
+        self, intent: str, reply_text: str, prospect, convo: Conversation,
+        competitors: str = "",
     ) -> str:
         """Generate an appropriate response based on intent."""
         history = conversation_history(convo.thread, prospect.full_name())
@@ -1335,6 +1349,10 @@ NEXT STEP
             playbook = self.brain.load_skill("selling_to_startups")
             if playbook:
                 prompt += "\n\nSELLING TO STARTUP FOUNDERS\n" + playbook
+        if competitors:
+            # Your battlecard for each competitor they named
+            # (sellbird.competitors), after the general competitive intel.
+            prompt += "\n\n" + competitors
 
         prompt += f"""
 

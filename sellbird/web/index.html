@@ -88,6 +88,7 @@
       <button onclick="showTab('discover', this)"><svg class="icon" aria-hidden="true"><use href="#i-discover"/></svg><span class="label">Discover</span></button>
       <button onclick="showTab('companies', this)"><svg class="icon" aria-hidden="true"><use href="#i-companies"/></svg><span class="label">Companies</span></button>
       <button onclick="showTab('prospects', this)"><svg class="icon" aria-hidden="true"><use href="#i-contacts"/></svg><span class="label">Contacts</span></button>
+      <button onclick="showTab('competitors', this)"><svg class="icon" aria-hidden="true"><use href="#i-flag"/></svg><span class="label">Competitors</span></button>
       <button onclick="showTab('campaigns', this)"><svg class="icon" aria-hidden="true"><use href="#i-campaigns"/></svg><span class="label">Campaigns</span></button>
     </div>
     <div class="nav-group">
@@ -253,6 +254,13 @@
     </div>
   </div>
   <div id="prospects-table"></div>
+</div>
+
+<!-- Competitors -->
+<div id="competitors" class="section">
+  <div class="section-head"><div><h2>Competitors</h2><p>Who you compete with, what to say about each, and who named one in a reply. Competitors are never cold-emailed.</p></div>
+    <div class="page-actions" id="competitors-actions"></div></div>
+  <div id="competitors-list"></div>
 </div>
 
 <!-- Campaigns -->

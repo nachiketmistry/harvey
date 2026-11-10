@@ -306,6 +306,8 @@ main.content { min-width: 0; padding: var(--sp-6) var(--sp-6) 96px; }
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
   padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--line);
 }
+/* In a padded card the head spans edge to edge, as in a flush one. */
+.card:not(.flush) > .card-head { margin: calc(-1 * var(--sp-5)) calc(-1 * var(--sp-5)) var(--sp-4); }
 .card-head h3 { font-size: var(--fs-body); font-weight: 600; letter-spacing: -0.01em; }
 .card-head .meta { font-size: var(--fs-caption); color: var(--text-3); }
 .inset {
@@ -1150,3 +1152,9 @@ dialog.modal::backdrop { background: rgb(0 0 0 / 0.45); }
 .relationship input.form-input { flex: 1 1 220px; min-width: 0; max-width: 420px; }
 .relationship-help { font-size: var(--fs-ui); margin-top: 6px; }
 .relationship .btn { height: 36px; }
+
+/* Competitors */
+.form-actions { display: flex; gap: var(--sp-2); align-items: center; }
+textarea.form-input.mono { font-size: var(--fs-ui); line-height: 1.5; resize: vertical; }
+.competitor-terms { white-space: normal; color: var(--text-2); max-width: 420px; }
+.competitor-excerpt { white-space: normal; color: var(--text-2); max-width: 560px; }
