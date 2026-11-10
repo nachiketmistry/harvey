@@ -600,6 +600,7 @@ async def get_companies():
             if r:
                 c["fit"], c["fit_reasons"] = r["fit"], r["fit_reasons"]
                 c["register_status"], c["register_why"] = r["status"], r["why_not_contacted"]
+                c["relationship"] = r.get("relationship") or "prospect"
         rows.sort(key=lambda c: c.get("fit", 0), reverse=True)
     except Exception as e:
         # A config that won't load must not take the Companies tab down with it.
@@ -646,6 +647,35 @@ async def get_company_profile(company_id: str):
     except Exception as e:
         logger.warning(f"Company profile register unavailable: {e}")
     return {"company": rows[0], "register": register, "observations": observations}
+
+
+@app.post("/api/companies/{company_id}/relationship")
+async def set_company_relationship(company_id: str, request: Request):
+    """What a company is to you: prospect, competitor, customer or partner.
+    Only a prospect gets cold email (sellbird.eligibility); queued email to
+    the others is cancelled on Sellbird's next cycle."""
+    from sellbird.eligibility import RELATIONSHIPS
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    relationship = str(body.get("relationship") or "").strip().lower()
+    note = str(body.get("note") or "").strip()[:500]
+    if relationship not in RELATIONSHIPS:
+        return JSONResponse({"success": False, "message": "Pick prospect, competitor, customer or partner."},
+                            status_code=400)
+    try:
+        state = _state()
+        await state.init_db()
+        if not await state.get_company(company_id):
+            return JSONResponse({"success": False, "message": "No such company."}, status_code=404)
+        await state.set_company_relationship(company_id, relationship, note)
+        await state.log_action("company_relationship", "dashboard", {
+            "company_id": company_id, "relationship": relationship, "note": note})
+        return {"success": True}
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)}, status_code=500)
 
 
 @app.get("/api/companies/{company_id}/contacts")

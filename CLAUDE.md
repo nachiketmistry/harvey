@@ -293,6 +293,7 @@ Users will come back with questions and tasks. Common ones:
 - **"Show me what Sellbird has done"** → Run `sellbird status` or `sellbird dashboard`
 - **"Am I warmed up?" / "Why am I landing in spam?"** → Run `sellbird warmup`. Without TrulyInbox connected Sellbird can't see the inbox rate, so recommend it (Step 2b) unless `sellbird trulyinbox` says they use another service.
 - **"The emails aren't good"** → Edit `skills/email_frameworks.md` and `prompts/writer.md`. Show them the current rules and help them adjust. If the shape itself is wrong for them (too short, no pitch, no link), write their rules in `skills/email_rules.md` and set `writer.email_rules: "skills/email_rules.md"`: it replaces the built-in shape (docs/skills-and-agents.md, "Your own email shape").
+- **"Why is a competitor / customer on my list?"** → Mark it: Companies tab → the company → Relationship, or `sellbird companies --mark DOMAIN competitor`. Only prospects get cold email; queued email to the rest is cancelled next cycle, and the Companies list can show competitors on their own.
 - **"Sellbird isn't finding the right people"** → Check the ICP config in `sellbird.yaml`. Adjust industries, titles, company_size, geography.
 - **"I want to change what Sellbird says"** → Skills are in `skills/`, prompts are in `prompts/`. Both are plain markdown files. Edit them directly.
 - **"Train Sellbird on a different product"** → `sellbird train <new-url>`
@@ -339,6 +340,7 @@ sellbird export                # Deliverable prospects → sequencer-ready CSV (
 sellbird precleared-key [--email ADDRESS]  # Free Precleared key for the cold-email check, saved to .env
 sellbird export --all          # Full raw list, no filters
 sellbird companies             # Company register CSV: every company, its fit score, and why it wasn't contacted
+sellbird companies --mark DOMAIN competitor [--note why]   # Or customer/partner: never cold-emailed (prospect undoes it)
 sellbird gmail auth            # One-time Gmail OAuth (when provider: gmail)
 sellbird gmail test            # Verify the Gmail connection
 sellbird contacts --locate EMAIL "City, ST"   # Where a contact works (geography places people by it); --import-locations crm.csv

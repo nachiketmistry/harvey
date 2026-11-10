@@ -1140,3 +1140,13 @@ dialog.modal::backdrop { background: rgb(0 0 0 / 0.45); }
 .notice.good { background: var(--good-bg); color: var(--good); }
 .notice.bad { background: var(--bad-bg); color: var(--bad); }
 .notice.info { background: var(--surface-2); color: var(--text-2); }
+
+/* Companies: which relationship the list shows, and setting one. */
+.companies-filter { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); font-size: var(--fs-ui); }
+.companies-filter .form-input { width: auto; min-width: 200px; }
+/* The label's first line sits level with the controls' text (36px tall). */
+.relationship { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: -8px; }
+.relationship select.form-input { width: auto; min-width: 140px; }
+.relationship input.form-input { flex: 1 1 220px; min-width: 0; max-width: 420px; }
+.relationship-help { font-size: var(--fs-ui); margin-top: 6px; }
+.relationship .btn { height: 36px; }

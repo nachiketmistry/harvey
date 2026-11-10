@@ -412,6 +412,34 @@ def cmd_usage(args):
     asyncio.run(_usage())
 
 
+async def _mark_company(domain: str, relationship: str, note: str = "") -> None:
+    """Record what a company is to you (sellbird.eligibility): a competitor,
+    customer or partner gets no cold email, and its queued email is cancelled
+    on Sellbird's next cycle."""
+    from sellbird.eligibility import RELATIONSHIPS
+    from sellbird.state import StateManager
+
+    relationship = relationship.strip().lower()
+    if relationship not in RELATIONSHIPS:
+        print(f"\n  '{relationship}' isn't one of: {', '.join(RELATIONSHIPS)}.\n")
+        return
+    state = StateManager()
+    await state.init_db()
+    company = await state.get_company_by_domain(domain)
+    if company is None:
+        print(f"\n  No company with the domain {domain}.\n")
+        return
+    await state.set_company_relationship(company.id, relationship, note.strip())
+    await state.log_action("company_relationship", "cli", {
+        "company_id": company.id, "domain": company.domain,
+        "relationship": relationship, "note": note.strip()})
+    if relationship == "prospect":
+        print(f"\n  {company.name or company.domain} is a prospect again.\n")
+    else:
+        print(f"\n  {company.name or company.domain} marked as a {relationship}: no cold email, "
+              "and anything queued for it is cancelled on Sellbird's next cycle.\n")
+
+
 def cmd_companies(args):
     """Write the company register to a CSV and summarise it."""
     from collections import Counter
@@ -423,6 +451,9 @@ def cmd_companies(args):
 
     if not DB_PATH.exists():
         print("\n  No database yet: run 'sellbird discover' or 'sellbird run' first.\n")
+        return
+    if getattr(args, "mark", None):
+        asyncio.run(_mark_company(*args.mark, note=getattr(args, "note", "")))
         return
     rows = asyncio.run(build_register(sqlite_query(DB_PATH), load_config()))
     out = Path(args.out) if args.out else (
@@ -1287,6 +1318,10 @@ def main():
     sub = subparsers.add_parser(
         "companies", help="Export the company register: every company, why it fits, and why it wasn't contacted"
     )
+    sub.add_argument("--mark", nargs=2, metavar=("DOMAIN", "RELATIONSHIP"),
+                     help="What a company is to you: prospect, competitor, customer or partner. "
+                          "Only prospects get cold email")
+    sub.add_argument("--note", default="", help="With --mark: why, e.g. 'builds a Splunk AI assistant'")
     sub.add_argument("--out", default="", help="Output file (default: data/exports/company-register-<date>.csv)")
     sub.set_defaults(func=cmd_companies)
 

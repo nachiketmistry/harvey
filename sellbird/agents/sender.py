@@ -24,7 +24,7 @@ from sellbird.config import (
 )
 from sellbird import extensions
 from sellbird.gate import autopilot_review, do_not_contact_match, pre_send_check
-from sellbird.geography import OUTSIDE_GEOGRAPHY, prospect_outside
+from sellbird.eligibility import excluded
 from sellbird.send_hooks import NO_HEADERS_HOLD, SendCheck, SendHookError, extra_headers, first_verdict
 from sellbird.send_window import in_window, next_send_time, recipient_country, recipient_zone
 from sellbird.integrations.instantly import InstantlyClient
@@ -604,7 +604,7 @@ class Sender:
         # that can send, and each pick sees the threads assigned before it.
         self.inboxes = await self._load_inboxes()
         try:
-            await self._cancel_outside_geography()
+            await self._cancel_excluded()
             for campaign in await self.state.get_campaigns_by_status("draft"):
                 try:
                     await self._stage_campaign_native(campaign)
@@ -615,34 +615,35 @@ class Sender:
         finally:
             self.inboxes = None
 
-    async def _outside(self, prospect) -> str:
-        """Where the prospect's company is when it's out of territory, else
-        "". A failed lookup reads as inside: it must not stop sending."""
+    async def _excluded(self, prospect) -> str:
+        """Why this person must get no cold email (sellbird.eligibility), or
+        "". A failed lookup reads as allowed: it must not stop sending."""
         try:
-            return await prospect_outside(self.state, prospect, self.config)
+            return await excluded(self.state, prospect, self.config)
         except Exception as e:
-            logger.debug(f"Sender: territory check failed for {getattr(prospect, 'id', '')}: {e}")
+            logger.debug(f"Sender: eligibility check failed for {getattr(prospect, 'id', '')}: {e}")
             return ""
 
-    async def _cancel_outside_geography(self) -> int:
+    async def _cancel_excluded(self) -> int:
         """Cancel queued cold email (waiting for review or approved) to
-        prospects now out of territory, so the Outbox doesn't ask you to
-        review emails Sellbird would refuse to send. Returns how many."""
+        people who may no longer get it (a competitor, out of territory), so
+        the Outbox doesn't ask you to review emails Sellbird would refuse to
+        send. Returns how many."""
         cancelled = 0
-        places: dict[str, str] = {}
+        reasons: dict[str, str] = {}
         for status in ("pending_review", "approved"):
             for item in await self.state.get_outbox(status=status, kind="sequence", limit=10000):
                 pid = item.get("prospect_id") or ""
-                if pid not in places:
+                if pid not in reasons:
                     prospect = await self.state.get_prospect(pid) if pid else None
-                    places[pid] = await self._outside(prospect) if prospect else ""
-                if places[pid]:
+                    reasons[pid] = await self._excluded(prospect) if prospect else ""
+                if reasons[pid]:
                     await self.state.update_outbox_item(
-                        item["id"], status="cancelled",
-                        error=f"{OUTSIDE_GEOGRAPHY} ({places[pid]})"[:300])
+                        item["id"], status="cancelled", error=reasons[pid][:300])
                     cancelled += 1
         if cancelled:
-            logger.info(f"Sender: cancelled {cancelled} queued email(s): {OUTSIDE_GEOGRAPHY}.")
+            logger.info(f"Sender: cancelled {cancelled} queued email(s) to people who "
+                        "may no longer get cold email.")
         return cancelled
 
     async def _load_inboxes(self) -> Inboxes:
@@ -712,8 +713,8 @@ class Sender:
             if await self.state.colleague_who_replied(prospect.id):
                 answered += 1     # their company already answered
                 continue
-            if await self._outside(prospect):
-                outside_count += 1    # out of territory: see sellbird.geography
+            if await self._excluded(prospect):
+                outside_count += 1    # a competitor, out of territory: sellbird.eligibility
                 continue
             seen_emails.add(email)
 
@@ -762,8 +763,8 @@ class Sender:
             )
         if outside_count:
             logger.info(
-                f"Sender: left out {outside_count} prospect(s) from '{campaign.name}': "
-                f"{OUTSIDE_GEOGRAPHY}."
+                f"Sender: left out {outside_count} prospect(s) from '{campaign.name}' "
+                "who may not get cold email (sellbird.eligibility)."
             )
         if staged:
             mode = "awaiting your approval" if require_approval else "approved"
@@ -870,11 +871,11 @@ class Sender:
             colleague = await self.state.colleague_who_replied(prospect.id)
             if colleague:
                 return "cancelled", f"{COLLEAGUE_REPLIED} ({colleague})"
-            # Out of territory (icp.geography): drafted before the boundary
-            # applied, or the territory changed since.
-            where = await self._outside(prospect)
-            if where:
-                return "cancelled", f"{OUTSIDE_GEOGRAPHY} ({where})"[:300]
+            # A competitor, or out of territory: drafted before the rule
+            # applied, or the company or territory changed since.
+            reason = await self._excluded(prospect)
+            if reason:
+                return "cancelled", reason[:300]
         gate = pre_send_check(
             item["to_email"], item["subject"], self._outgoing_body(item),
             prospect=prospect, allow_risky=allow_risky, kind=item["kind"],

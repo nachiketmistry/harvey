@@ -14,6 +14,7 @@ import io
 from sellbird.config import ComplianceConfig, live_do_not_contact
 from sellbird.fit import company_fit, current_roles
 from sellbird.gate import do_not_contact_match
+from sellbird.eligibility import PROSPECT, RELATIONSHIP_LABELS
 from sellbird.geography import company_place
 
 COLUMNS = [
@@ -40,9 +41,19 @@ def _contacts(prospects: list[dict]) -> str:
 
 def company_status(company: dict, prospects: list[dict], outbox: list[dict],
                    observations: list[dict], dnc: list[str],
-                   send_to_risky: bool = False, config=None) -> tuple[str, str]:
+                   send_to_risky: bool = False, config=None,
+                   relationship: dict | None = None) -> tuple[str, str]:
     """(status, why) for one company. ``why`` says why nothing went out, or
-    what happens next. ``send_to_risky`` is channels.email.send_to_risky."""
+    what happens next. ``send_to_risky`` is channels.email.send_to_risky,
+    ``relationship`` its company_relationships row (a competitor, customer
+    or partner), if any."""
+    rel = (relationship or {}).get("relationship") or PROSPECT
+    if rel != PROSPECT:
+        note = (relationship or {}).get("note") or ""
+        why = {"competitor": "A competitor: watched, never cold-emailed",
+               "customer": "A customer: never cold-emailed",
+               "partner": "A partner: never cold-emailed"}.get(rel, "Never cold-emailed")
+        return RELATIONSHIP_LABELS.get(rel, rel.title()), why + (f". {note}" if note else "")
     domain = (company.get("domain") or "").lower()
     if domain and dnc and do_not_contact_match(f"x@{domain}", dnc):
         return "Excluded", "On your do-not-contact list"
@@ -118,7 +129,14 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
     observations = await query_db(
         "SELECT company_id, signal_code, value_text, value_num, observed_at FROM observations "
         "WHERE signal_code IN "
-        "('DECISION_MAKER_TITLE', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'SITE_MENTIONS')" + one.format(col="company_id"), args)
+        "('DECISION_MAKER_TITLE', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'SITE_MENTIONS', 'COMPANY_SITE')"
+        + one.format(col="company_id"), args)
+    try:
+        relationships = {r["company_id"]: r for r in await query_db(
+            "SELECT company_id, relationship, note FROM company_relationships WHERE 1=1"
+            + one.format(col="company_id"), args)}
+    except Exception:  # a database from before v17, not yet migrated
+        relationships = {}
     by_p: dict[str, list] = {}
     by_o: dict[str, list] = {}
     by_obs: dict[str, list] = {}
@@ -134,14 +152,17 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
         cid = c["id"]
         ps, obs = by_p.get(cid, []), by_obs.get(cid, [])
         fit, reasons = company_fit(c, ps, obs, config, dnc)
+        rel = relationships.get(cid) or {}
         status, why = company_status(c, ps, by_o.get(cid, []), obs, dnc, send_to_risky,
-                                     config=config)
+                                     config=config, relationship=rel)
         sector, area = c.get("industry") or "", c.get("location") or ""
         found = f"Found via {c['source']}" if c.get("source") else ""
         rows.append({
             # id and fit_reasons are for the dashboard; the CSV leaves them out.
             "id": cid,
             "fit_reasons": reasons,
+            "relationship": rel.get("relationship") or PROSPECT,
+            "relationship_note": rel.get("note") or "",
             "company": c.get("name") or c.get("domain") or "",
             "website": c.get("website") or (f"https://{c['domain']}" if c.get("domain") else ""),
             "sector": sector,

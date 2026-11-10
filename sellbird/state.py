@@ -554,6 +554,15 @@ MIGRATIONS: list[str] = [
     ALTER TABLE conversations ADD COLUMN mailbox_id TEXT DEFAULT '';
     CREATE INDEX IF NOT EXISTS idx_outbox_mailbox_sent ON outbox(mailbox_id, status, sent_at);
     """,
+    # ── v17: what a company is to you ──
+    # The CRM account type: a prospect (the default, no row), or a
+    # competitor, customer or partner, none of whom gets cold email. Set only
+    # by the user. The actions log keeps the history of changes.
+    """
+    CREATE TABLE IF NOT EXISTS company_relationships (company_id TEXT PRIMARY KEY,
+      relationship TEXT NOT NULL, note TEXT DEFAULT '',
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+    """,
 ]
 
 BRAIN_PROVIDERS = ("claude", "codex")
@@ -1911,6 +1920,36 @@ class StateManager:
         {"round", "amount", "date"} (any may be ""), or None."""
         row = await self._latest_yes(company_id, "FUNDING_ROUND")
         return parse_funding(row.get("value_text") or "") if row else None
+
+    async def set_company_relationship(self, company_id: str, relationship: str,
+                                       note: str = "") -> None:
+        """Record what a company is to you; "prospect" clears it."""
+        async with self._connect() as db:
+            if relationship == "prospect":
+                await db.execute("DELETE FROM company_relationships WHERE company_id = ?",
+                                 (company_id,))
+            else:
+                await db.execute(
+                    "INSERT INTO company_relationships (company_id, relationship, note, updated_at) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT(company_id) DO UPDATE SET "
+                    "relationship = excluded.relationship, note = excluded.note, "
+                    "updated_at = excluded.updated_at",
+                    (company_id, relationship, note, _utcnow().isoformat()))
+            await db.commit()
+
+    async def get_company_relationship(self, company_id: str) -> dict | None:
+        """{"relationship", "note", "updated_at"} for a company, or None for
+        a prospect."""
+        if not company_id:
+            return None
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT relationship, note, updated_at FROM company_relationships "
+                "WHERE company_id = ?", (company_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        return dict(row) if row else None
 
     async def get_prospect_observations(self, prospect_id: str, signal_code: str) -> list[dict]:
         """A person's observations of one signal, newest first."""

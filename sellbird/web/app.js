@@ -2072,6 +2072,10 @@ async function sendingToggle(action) {
 
 const COMPANIES_PER_PAGE = 50;
 let _companiesPage = 0;
+// Which companies the list shows: everyone, or one relationship
+// (prospect, competitor, customer, partner). Remembered per browser.
+let _companiesShow = (() => { try { return localStorage.getItem('companies-show') || 'all'; } catch { return 'all'; } })();
+const RELATIONSHIPS = [['prospect', 'Prospect'], ['competitor', 'Competitor'], ['customer', 'Customer'], ['partner', 'Partner']];
 
 async function loadCompanies() {
   companyDrill = false;
@@ -2088,18 +2092,36 @@ async function loadCompanies() {
   renderCompaniesPage(_companiesPage);
 }
 
+function companiesShow(value) {
+  _companiesShow = value;
+  try { localStorage.setItem('companies-show', value); } catch {}
+  renderCompaniesPage(0);
+}
+
 function renderCompaniesPage(page) {
   const el = document.getElementById('companies-list');
-  const data = _companies;
+  const rel = c => c.relationship || 'prospect';
+  const counts = {all: _companies.length};
+  for (const c of _companies) counts[rel(c)] = (counts[rel(c)] || 0) + 1;
+  if (_companiesShow !== 'all' && !counts[_companiesShow]) _companiesShow = 'all';
+  // [company, its index in _companies]: a row opens the right company.
+  const data = _companies.map((c, i) => [c, i]).filter(([c]) => _companiesShow === 'all' || rel(c) === _companiesShow);
+  const plural = {prospect: 'Prospects', competitor: 'Competitors', customer: 'Customers', partner: 'Partners'};
+  const filter = '<div class="companies-filter"><label for="companies-show" class="muted">Show</label>' +
+    '<select class="form-input" id="companies-show" onchange="companiesShow(this.value)">' +
+    '<option value="all"' + (_companiesShow === 'all' ? ' selected' : '') + '>All companies (' + counts.all + ')</option>' +
+    RELATIONSHIPS.filter(([v]) => counts[v]).map(([v]) =>
+      '<option value="' + v + '"' + (_companiesShow === v ? ' selected' : '') + '>' +
+        plural[v] + ' (' + counts[v] + ')</option>').join('') +
+    '</select></div>';
   const pages = Math.max(1, Math.ceil(data.length / COMPANIES_PER_PAGE));
   _companiesPage = Math.min(Math.max(0, page), pages - 1);
   const start = _companiesPage * COMPANIES_PER_PAGE;
-  let html = '<div class="table-card"><table class="nowrap"><thead><tr><th>Company</th>' +
+  let html = filter + '<div class="table-card"><table class="nowrap"><thead><tr><th>Company</th>' +
     '<th title="Company fit, 0-100: sector, decision maker, reachability, buying signal. Hover a score for why.">Fit</th>' +
     '<th title="Hover a status for why the company was or wasn\'t contacted">Status</th>' +
     '<th>Industry</th><th>Location</th><th class="num">Contacts</th><th>Added</th></tr></thead><tbody>';
-  data.slice(start, start + COMPANIES_PER_PAGE).forEach((c, j) => {
-    const i = start + j;
+  data.slice(start, start + COMPANIES_PER_PAGE).forEach(([c, i]) => {
     const website = c.website || (c.domain ? 'https://' + c.domain : '');
     const domain = safeHref(website)
       ? '<a href="' + safeHref(website) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">' +
@@ -2159,6 +2181,8 @@ function companyInfoCard(company, profile) {
     row('Website', link(website, c.domain || website)) +
     row('Sector', escHtml(c.industry)) +
     row('Area', escHtml(c.location)) +
+    row('Relationship', relationshipControl(c.id, reg.relationship || company.relationship || 'prospect',
+      reg.relationship_note || '')) +
     row('Why selected', escHtml(reg.why_selected || (company.fit_reasons || []).join(' · '))) +
     row('Status', '<b>' + escHtml(reg.status || company.register_status || '') + '</b>' +
       (reg.why_not_contacted || company.register_why ? ' — ' + escHtml(reg.why_not_contacted || company.register_why) : '')) +
@@ -2172,6 +2196,37 @@ function companyInfoCard(company, profile) {
     row('First found', escHtml((c.created_at || '').slice(0, 10))) +
     '</tbody></table></div>';
   return html;
+}
+
+// What the company is to you. Only a prospect gets cold email; the rest are
+// watched (a competitor) or left alone (a customer, a partner).
+function relationshipControl(id, current, note) {
+  return '<div class="relationship">' +
+    '<select class="form-input" id="rel-' + escHtml(id) + '" aria-label="Relationship">' +
+      RELATIONSHIPS.map(([v, label]) => '<option value="' + v + '"' + (v === current ? ' selected' : '') + '>' +
+        label + '</option>').join('') + '</select>' +
+    '<input class="form-input" id="rel-note-' + escHtml(id) + '" placeholder="Why (optional)" value="' +
+      escHtml(note) + '" maxlength="500">' +
+    '<button class="btn btn-secondary" onclick="saveRelationship(' + jsq(id) + ')">Save</button>' +
+    '</div><div class="muted relationship-help">Only prospects get cold email. ' +
+    'Competitors, customers and partners never do, and anything already queued for them is cancelled.</div>';
+}
+
+async function saveRelationship(id) {
+  const relationship = document.getElementById('rel-' + id).value;
+  const note = document.getElementById('rel-note-' + id).value.trim();
+  const data = await api('/api/companies/' + encodeURIComponent(id) + '/relationship', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({relationship: relationship, note: note}),
+  });
+  if (!data || !data.success) { showToast(failMsg(data, 'Could not save.'), 'error'); return; }
+  showToast(relationship === 'prospect' ? 'Saved: a prospect.'
+    : 'Saved: no cold email to this ' + relationship + '.', 'success');
+  const i = _companies.findIndex(c => c.id === id);
+  const list = await api('/api/companies');
+  if (list) _companies = list;
+  const j = _companies.findIndex(c => c.id === id);
+  if (j >= 0) showCompanyContacts(j); else if (i >= 0) loadCompanies();
 }
 
 async function showCompanyContacts(index) {

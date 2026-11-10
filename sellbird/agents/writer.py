@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 
 from sellbird.brain import Brain
 from sellbird.config import EmailRulesError, SellbirdConfig, compliance_of, load_email_rules
-from sellbird.geography import CERTAINTY, UNKNOWN, prospect_outside, prospect_rank
+from sellbird.eligibility import excluded
+from sellbird.geography import CERTAINTY, UNKNOWN, prospect_rank
 from sellbird.humanize import humanize, humanizer_enabled
 from sellbird.integrations.mail_provider import NATIVE_PROVIDERS
 from sellbird.models.campaign import Campaign, EmailStep
@@ -178,12 +179,11 @@ class Writer:
                 logger.info("Writer: No prospects at or above the minimum score.")
                 return
 
-        # icp.geography is the territory: a prospect at a company placed
-        # outside it stays 'new' and is never written for (see
-        # sellbird.geography.outside).
-        prospects_with_email = await self._in_territory(prospects_with_email)
+        # A prospect at a competitor, customer or partner, or out of
+        # territory, stays 'new' and is never written for (sellbird.eligibility).
+        prospects_with_email = await self._eligible(prospects_with_email)
         if not prospects_with_email:
-            logger.info("Writer: No prospects inside icp.geography.")
+            logger.info("Writer: No prospects who may get cold email.")
             return
 
         # Batches are capped and leftovers wait a cycle, so the order here is
@@ -686,20 +686,21 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             "They never override the FACTS rule:\n" + pairs
         )
 
-    async def _in_territory(self, prospects: list) -> list:
-        """Prospects whose company isn't placed outside icp.geography."""
-        kept, skipped = [], []
+    async def _eligible(self, prospects: list) -> list:
+        """Prospects who may get cold email (sellbird.eligibility): not at a
+        competitor, customer or partner, and not out of territory."""
+        kept, why = [], []
         for p in prospects:
             try:
-                where = await prospect_outside(self.state, p, self.config)
+                reason = await excluded(self.state, p, self.config)
             except Exception as e:
-                logger.debug(f"Writer: territory check failed for {p.id}: {e}")
-                where = ""
-            (skipped if where else kept).append(where or p)
-        if skipped:
+                logger.debug(f"Writer: eligibility check failed for {p.id}: {e}")
+                reason = ""
+            (why if reason else kept).append(reason or p)
+        if why:
             logger.info(
-                f"Writer: Skipping {len(skipped)} prospect(s) outside icp.geography "
-                f"({', '.join(sorted(set(skipped))[:5])})."
+                f"Writer: Skipping {len(why)} prospect(s) who may not get cold email "
+                f"({', '.join(sorted(set(why))[:5])})."
             )
         return kept
 

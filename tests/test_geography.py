@@ -88,6 +88,9 @@ class FakeState:
     async def get_setting(self, key):
         return None
 
+    async def get_company_relationship(self, company_id):
+        return None
+
     async def get_observations(self, company_id="", signal_code="", latest_only=False, limit=500):
         sites = self.sites.get(company_id)
         return [{"value_text": " | ".join(sites)}] if sites and signal_code == "COMPANY_SITE" else []
@@ -158,7 +161,7 @@ def test_writer_leaves_out_of_territory_prospects_unwritten():
     writer.config = config(geography=PNW, coords={})
     writer.state = FakeState({"hk": "HK", "wa": "Washougal, WA", "fr": "FR", "us": "Austin, TX"})
     p = lambda pid, cid: SimpleNamespace(id=pid, company_id=cid, score=50)
-    kept = asyncio.run(writer._in_territory([p("1", "hk"), p("2", "wa"), p("3", "fr"),
+    kept = asyncio.run(writer._eligible([p("1", "hk"), p("2", "wa"), p("3", "fr"),
                                              p("4", "us"), p("5", "")]))
     assert [x.id for x in kept] == ["2", "4", "5"]
 
@@ -223,3 +226,15 @@ def test_fit_counts_a_local_office():
               "observed_at": "2026-11-09"}]
     reasons = company_fit(company, [], sites, config(geography=PNW, coords={}))[1]
     assert "location: Pacific Northwest (priority 1): company has a site in Bellevue, WA, US" in reasons
+
+
+def test_a_bare_code_is_a_country_and_after_a_city_a_state():
+    # CRMs write a country as a bare code: "DE" is Germany, not Delaware.
+    cfg = config(geography=PNW, coords={})
+    assert tier("DE", cfg) == (None, "") and outside("DE", cfg)
+    assert tier("IN", cfg) == (None, "") and outside("IN", cfg)
+    # After a city, a code that is a state too reads as the state.
+    assert tier("Dover, DE", cfg) == (1, "United States")
+    assert tier("Pittsburgh, PA", cfg) == (1, "United States")
+    assert tier("Boise, ID", cfg) == (0, "Pacific Northwest")
+    assert place(cfg, None, [("DE", "")]).outside

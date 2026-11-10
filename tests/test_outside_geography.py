@@ -63,7 +63,7 @@ async def test_sweep_cancels_queued_email_outside_territory(state):
     waiting = await _queued(state, hk, "ann@campus.example.hk", "pending_review")
     approved = await _queued(state, hk, "ann@campus.example.hk", "approved", step=2)
     kept = await _queued(state, us, "ann@shop.example.com", "pending_review")
-    assert await _sender(state)._cancel_outside_geography() == 2
+    assert await _sender(state)._cancel_excluded() == 2
     for item in (waiting, approved):
         row = await _row(state, item)
         assert row["status"] == "cancelled" and OUTSIDE_GEOGRAPHY in row["error"]
@@ -86,5 +86,5 @@ async def test_last_keeps_out_of_territory(state):
     waiting = await _queued(state, hk, "ann@campus.example.hk", "pending_review")
     sender = _sender(state)
     sender.config.icp = SimpleNamespace(**{**vars(TERRITORY), "outside_geography": "last"})
-    assert await sender._cancel_outside_geography() == 0
+    assert await sender._cancel_excluded() == 0
     assert (await _row(state, waiting))["status"] == "pending_review"

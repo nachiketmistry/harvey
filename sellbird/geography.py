@@ -39,7 +39,7 @@ from dataclasses import dataclass
 
 from sellbird.locations import split_sites
 from sellbird.send_window import (
-    _clean, _country_in, _km, _parts, _point, country_for, subdivision_for,
+    _clean, _country_in, _km, _parts, _point, country_code, country_for, subdivision_for,
 )
 
 # Why a queued email to an out-of-territory company was cancelled.
@@ -75,6 +75,22 @@ REGIONS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _country(location: str, point: str = "") -> str:
+    """The country a company's or person's location puts them in, or "".
+
+    send_window reads a code that is a US state and a country too as the
+    state ("Pittsburgh, PA"), which is right after a city. A bare code with
+    nothing else is how CRMs and listings write a country ("DE", "FR"), so
+    there it's the country: "DE" is Germany, not Delaware."""
+    country, certain = country_for(location, point)
+    if certain:
+        return country
+    parts = _parts(location)
+    if len(parts) == 1 and len(parts[0]) == 2 and parts[0].isalpha():
+        return country_code(parts[0]) or country
+    return country
+
+
 def _radius(spec: str) -> tuple[tuple[float, float], float] | None:
     """(centre, radius_km) from a "lat,lng,radius_km" setting, or None."""
     centre = _point(spec)
@@ -102,13 +118,13 @@ def region_members(entry: str, regions: dict | None = None) -> tuple[str, ...]:
 
 
 def _in_region(members: tuple[str, ...], location: str, point: str) -> bool:
-    country = country_for(location, point)[0]
+    country = _country(location, point)
     if not country:
         return False
     if country in members:
         return True
     subdivision = subdivision_for(location, point)
-    return bool(subdivision) and subdivision in members
+    return subdivision.startswith(country + "-") and subdivision in members
 
 
 def placeable(entry: str, coords: dict | None = None, regions: dict | None = None) -> bool:
@@ -133,14 +149,14 @@ def matches(entry: str, location: str, point: str = "", coords: dict | None = No
         return _in_region(members, location, point)
     country = _entry_country(entry)
     if country:
-        return country_for(location, point)[0] == country
+        return _country(location, point) == country
     entry_parts = _parts(entry)
     if not entry_parts:
         return False
     # _parts is last-first, so the place name is the last element.
     if _clean(entry_parts[-1]) not in loc_parts:
         return False
-    theirs, ours = country_for(location, point)[0], country_for(entry, "")[0]
+    theirs, ours = _country(location, point), country_for(entry, "")[0]
     return not (theirs and ours and theirs != ours)
 
 
@@ -166,7 +182,7 @@ def outside(location: str, config, point: str = "") -> bool:
     entries = list(getattr(icp, "geography", None) or [])
     if not entries or (getattr(icp, "outside_geography", "skip") or "skip") != "skip":
         return False
-    if not country_for(location, point)[0]:
+    if not _country(location, point):
         return False
     coords = getattr(icp, "geo_coordinates", None) or {}
     regions = getattr(icp, "regions", None) or {}
@@ -227,7 +243,7 @@ def place(config, person: tuple[str, str] | None = None,
     ``person`` is their own (location, point), ``sites`` the company's
     (location, point) list. A person location counts only when Sellbird can
     place it in a country ("Remote" can't be, so the company stands in)."""
-    if person and person[0].strip() and country_for(person[0], person[1])[0]:
+    if person and person[0].strip() and _country(person[0], person[1]):
         loc, point = person
         index, entry = tier(loc, config, point)
         return Placement(index, entry, PERSON, outside(loc, config, point), loc.strip())
