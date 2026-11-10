@@ -2196,11 +2196,27 @@ function companyInfoCard(company, profile) {
     row('Hiring', list(by('HIRING_ROLE'), 6)) +
     row('Tech on website', escHtml(by('TECH_STACK').map(o => o.value_text).slice(0, 1).join(''))) +
     row('Other signals', other.slice(0, 8).map(o => escHtml(o.label) + ': ' +
-      escHtml(o.value_text || String(o.value_num))).join('<br>')) +
+      escHtml(signalText(o))).join('<br>')) +
     row('Found via', c.source_url ? link(c.source_url, 'search result') + ' · ' + escHtml(c.source || '') : escHtml(c.source || '')) +
     row('First found', escHtml((c.created_at || '').slice(0, 10))) +
     '</tbody></table></div>';
   return html;
+}
+
+// An observation's value as words. Places are stored as JSON
+// (sellbird.locations): [{"city": "Fircrest", "region": "US-WA", ...}].
+function signalText(o) {
+  const text = o.value_text || '';
+  if (text.startsWith('[') || text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      const places = (Array.isArray(parsed) ? parsed : [parsed]).filter(p => p && typeof p === 'object');
+      const named = places.map(p => [p.city, (p.region || '').replace(/^[A-Z]{2}-/, ''), p.country]
+        .filter(Boolean).join(', ')).filter(Boolean);
+      if (named.length) return named.join('; ');
+    } catch (e) { /* not JSON: show it as written */ }
+  }
+  return text || String(o.value_num);
 }
 
 // What the company is to you. Only a prospect gets cold email; the rest are
