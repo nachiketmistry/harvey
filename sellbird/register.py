@@ -42,7 +42,8 @@ def _contacts(prospects: list[dict]) -> str:
 def company_status(company: dict, prospects: list[dict], outbox: list[dict],
                    observations: list[dict], dnc: list[str],
                    send_to_risky: bool = False, config=None,
-                   relationship: dict | None = None) -> tuple[str, str]:
+                   relationship: dict | None = None,
+                   places: dict | None = None) -> tuple[str, str]:
     """(status, why) for one company. ``why`` says why nothing went out, or
     what happens next. ``send_to_risky`` is channels.email.send_to_risky,
     ``relationship`` its company_relationships row (a competitor, customer
@@ -67,7 +68,7 @@ def company_status(company: dict, prospects: list[dict], outbox: list[dict],
 
     states = {o.get("status") for o in outbox}
     sent = "sent" in states or any(p.get("status") in DONE for p in prospects)
-    if not sent and config is not None and company_place(company, observations, config).outside:
+    if not sent and config is not None and company_place(company, observations, config, places).outside:
         return "Excluded", "Outside your geography (icp.geography)"
     if "sent" in states or any(p.get("status") in DONE for p in prospects):
         replied = any(p.get("status") in {"replied", "meeting", "closed"} for p in prospects)
@@ -127,10 +128,14 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
         "SELECT p.company_id, o.status, o.send_at FROM outbox o JOIN prospects p ON p.id = o.prospect_id "
         "WHERE 1=1" + one.format(col="p.company_id"), args)
     observations = await query_db(
-        "SELECT company_id, signal_code, value_text, value_num, observed_at FROM observations "
+        "SELECT company_id, signal_code, value_text, value_num, observed_at, collector FROM observations "
         "WHERE signal_code IN "
         "('DECISION_MAKER_TITLE', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'SITE_MENTIONS', 'COMPANY_SITE')"
         + one.format(col="company_id"), args)
+    # Resolved free-text locations (sellbird.locations): read once, so
+    # placing a company here never looks anything up.
+    places = {r["key"]: r["value"] for r in await query_db(
+        "SELECT key, value FROM settings WHERE key LIKE 'place:%'")}
     try:
         relationships = {r["company_id"]: r for r in await query_db(
             "SELECT company_id, relationship, note FROM company_relationships WHERE 1=1"
@@ -151,10 +156,10 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
     for c in companies:
         cid = c["id"]
         ps, obs = by_p.get(cid, []), by_obs.get(cid, [])
-        fit, reasons = company_fit(c, ps, obs, config, dnc)
+        fit, reasons = company_fit(c, ps, obs, config, dnc, places)
         rel = relationships.get(cid) or {}
         status, why = company_status(c, ps, by_o.get(cid, []), obs, dnc, send_to_risky,
-                                     config=config, relationship=rel)
+                                     config=config, relationship=rel, places=places)
         sector, area = c.get("industry") or "", c.get("location") or ""
         found = f"Found via {c['source']}" if c.get("source") else ""
         rows.append({

@@ -68,7 +68,8 @@ def current_roles(observations: list[dict]) -> list[dict]:
 
 
 def company_fit(company: dict, prospects: list[dict], observations: list[dict],
-                config, dnc: list[str] | None = None) -> tuple[int, list[str]]:
+                config, dnc: list[str] | None = None,
+                places: dict | None = None) -> tuple[int, list[str]]:
     """(score, reasons) for one company. ``prospects`` and ``observations``
     are that company's rows, as dicts. ``dnc`` is the do-not-contact list
     (default: the config's)."""
@@ -140,13 +141,15 @@ def company_fit(company: dict, prospects: list[dict], observations: list[dict],
     # rather than the score. Each contact is placed on their own when their
     # location is known; this is the company's footprint.
     if getattr(icp, "geography", None):
-        where = company_place(company, observations, config)
+        where = company_place(company, observations, config, places)
         if where.outside:
             reasons.append("location: outside your geography (not contacted)")
         elif where.tier is not None:
             reasons.append(f"location: {where.reason()}")
         elif where.basis != "unknown":
             reasons.append("location: outside your geography (contacted last)")
+        elif where.unresolved:
+            reasons.append(f"location: {where.reason()}")
 
     return min(score, 100), reasons
 

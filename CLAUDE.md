@@ -344,6 +344,8 @@ sellbird companies --mark DOMAIN competitor [--note why]   # Or customer/partner
 sellbird gmail auth            # One-time Gmail OAuth (when provider: gmail)
 sellbird gmail test            # Verify the Gmail connection
 sellbird contacts --locate EMAIL "City, ST"   # Where a contact works (geography places people by it); --import-locations crm.csv
+sellbird companies --locate DOMAIN "City, Country"   # Where a company is; --import-locations companies.csv
+sellbird locations             # Resolve free-text locations (tables, then geocoder, cached); lists what needs you
 sellbird outbox                # Review queued emails; --approve <id> / --approve-all / --reject <id> / --redraft <id> [--note] / --redraft-all
 sellbird signals               # The signal vocabulary; --confirm / --reject CODES (or 'free' / 'all')
 sellbird discover              # Find businesses; --providers / --estimate / --provider <key>

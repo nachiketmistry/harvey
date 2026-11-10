@@ -1,48 +1,44 @@
-"""Geography: which ``icp.geography`` entry a company is in.
+"""Geography: which ``icp.geography`` entry a person or company is in.
 
 ``icp.geography`` is the territory, in priority order: the first entry is
 where the user most wants to sell, the next is the next best. This is the
 tiered-account model account-based sales uses (Tier 1, 2, 3), and the
 scarce thing (drafts, sends) goes to the top tier first.
 
-Together the entries are also the boundary. A company Sellbird can place
-in a country, and that is in no entry, is out of territory: it isn't
-written to and nothing queued for it is sent (``icp.outside_geography:
-skip``, the default). ``last`` keeps it, ranked after every entry. A
-company whose location says nothing is never out of territory, only last,
-and when any entry is a name Sellbird can't place ("Western Europe" with no
-``icp.regions`` definition) nobody is ruled out, since it can't tell who is
-in that entry.
+Everything here works on structured places (``sellbird.locations.Place``:
+city, ISO 3166-2 region, ISO 3166-1 country), never on re-parsed text.
+Free text is turned into a place once, by the reference tables or the
+geocoder, and what neither can settle is unknown, not guessed.
 
-An entry matches a company when:
+An entry matches a place when:
 
 - it has ``icp.geo_coordinates`` with a radius ("lat,lng,radius_km") and
-  the company's cached coordinates are inside that circle;
-- its place name is one of the company location's parts ("Seattle, WA"
-  matches "Seattle, WA, USA" and "Seattle"), unless both name a country and
-  the countries differ;
-- it names a country alone ("United States", "Canada", "GB") and the
-  company's location puts it in that country (see ``send_window.country_for``).
+  the place's coordinates are inside that circle;
+- it names a region, built in (REGIONS) or defined in ``icp.regions``, and
+  the place's country or ISO 3166-2 region is one of its members ("US",
+  "US-WA");
+- it is a country ("United States") and the place is in it;
+- it is a state or province ("Washington, US") and the place is in it;
+- it is a city ("Seattle, WA") and the place is that city, in the same
+  region and country.
 
-- it names a region, built in (REGIONS) or defined in ``icp.regions``,
-  and the company's country or state/province is one of its members.
-  Members are ISO codes: a country ("US", "MX") or a state or province
-  ("US-WA", "CA-BC").
-
-Anything else matches only by name. A company whose location says nothing
-matches no entry, so it ranks with the rest.
+Together the entries are also the boundary: a place in a known country that
+matches no entry is out of territory (``icp.outside_geography: skip``, the
+default; ``last`` keeps it, ranked after every entry). An unknown place is
+never out, only last, and when any entry is one Sellbird can't judge
+("Western Europe" with no ``icp.regions`` definition) nobody is ruled out.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sellbird.locations import split_sites
-from sellbird.send_window import (
-    _clean, _country_in, _km, _parts, _point, country_code, country_for, subdivision_for,
+from sellbird.locations import (
+    Place, cached_from, cached_place, parse_places, place_by_convention, place_from_text,
 )
+from sellbird.send_window import _clean, _km, _point
 
-# Why a queued email to an out-of-territory company was cancelled.
+# Why a queued email to an out-of-territory person was cancelled.
 OUTSIDE_GEOGRAPHY = "outside your geography"
 
 # UN M49 sub-regions of the Americas (unstats.un.org/unsd/methodology/m49).
@@ -75,22 +71,6 @@ REGIONS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _country(location: str, point: str = "") -> str:
-    """The country a company's or person's location puts them in, or "".
-
-    send_window reads a code that is a US state and a country too as the
-    state ("Pittsburgh, PA"), which is right after a city. A bare code with
-    nothing else is how CRMs and listings write a country ("DE", "FR"), so
-    there it's the country: "DE" is Germany, not Delaware."""
-    country, certain = country_for(location, point)
-    if certain:
-        return country
-    parts = _parts(location)
-    if len(parts) == 1 and len(parts[0]) == 2 and parts[0].isalpha():
-        return country_code(parts[0]) or country
-    return country
-
-
 def _radius(spec: str) -> tuple[tuple[float, float], float] | None:
     """(centre, radius_km) from a "lat,lng,radius_km" setting, or None."""
     centre = _point(spec)
@@ -99,12 +79,6 @@ def _radius(spec: str) -> tuple[tuple[float, float], float] | None:
     except (IndexError, ValueError):
         return None
     return (centre, radius) if centre and radius > 0 else None
-
-
-def _entry_country(entry: str) -> str:
-    """The country an entry names when it is only a country, else ""."""
-    parts = _parts(entry)
-    return _country_in(parts) if len(parts) == 1 else ""
 
 
 def region_members(entry: str, regions: dict | None = None) -> tuple[str, ...]:
@@ -117,83 +91,95 @@ def region_members(entry: str, regions: dict | None = None) -> tuple[str, ...]:
     return REGIONS.get(name, ())
 
 
-def _in_region(members: tuple[str, ...], location: str, point: str) -> bool:
-    country = _country(location, point)
-    if not country:
-        return False
-    if country in members:
-        return True
-    subdivision = subdivision_for(location, point)
-    return subdivision.startswith(country + "-") and subdivision in members
+def entry_place(entry: str) -> Place | None:
+    """The place an entry names ("Seattle, WA", "United States", "Denver,
+    CO": you wrote it about your own territory, so a code after a city is
+    the state), or None for a name Sellbird can't place."""
+    return place_by_convention(entry)
 
 
 def placeable(entry: str, coords: dict | None = None, regions: dict | None = None) -> bool:
-    """True when Sellbird can tell whether a company is in ``entry``: a
-    region, a country, a place in a country it can name, or a radius."""
-    return bool(region_members(entry, regions) or _entry_country(entry)
-                or _radius((coords or {}).get(entry, "")) or country_for(entry, "")[0])
+    """True when Sellbird can tell whether a place is in ``entry``."""
+    return bool(region_members(entry, regions) or _radius((coords or {}).get(entry, ""))
+                or entry_place(entry))
 
 
-def matches(entry: str, location: str, point: str = "", coords: dict | None = None,
-            regions: dict | None = None) -> bool:
-    """True when a company at ``location`` (cached ``point``) is in ``entry``."""
-    loc_parts = [_clean(p) for p in _parts(location)]
-    if not loc_parts and not point:
+def _cities(city: str) -> set[str]:
+    """"Tukwila/Seattle" -> {"tukwila", "seattle"}."""
+    return {_clean(c) for c in city.replace("/", ",").split(",") if c.strip()}
+
+
+def matches_place(entry: str, place: Place | None, coords: dict | None = None,
+                  regions: dict | None = None) -> bool:
+    """True when ``place`` is in ``entry``."""
+    if place is None or not place.known:
         return False
     circle = _radius((coords or {}).get(entry, ""))
-    here = _point(point)
+    here = _point(place.point())
     if circle and here and _km(here, circle[0]) <= circle[1]:
         return True
     members = region_members(entry, regions)
     if members:
-        return _in_region(members, location, point)
-    country = _entry_country(entry)
-    if country:
-        return _country(location, point) == country
-    entry_parts = _parts(entry)
-    if not entry_parts:
+        return place.country in members or (bool(place.region) and place.region in members)
+    target = entry_place(entry)
+    if target is None or target.country != place.country:
         return False
-    # _parts is last-first, so the place name is the last element.
-    if _clean(entry_parts[-1]) not in loc_parts:
-        return False
-    theirs, ours = _country(location, point), country_for(entry, "")[0]
-    return not (theirs and ours and theirs != ours)
+    if target.city:
+        return ((not target.region or target.region == place.region)
+                and bool(_cities(target.city) & _cities(place.city)))
+    if target.region:
+        return target.region == place.region
+    return True
 
 
-def tier(location: str, config, point: str = "") -> tuple[int | None, str]:
-    """(index into icp.geography, entry) for the first entry the company is
+def tier_place(place: Place | None, config) -> tuple[int | None, str]:
+    """(index into icp.geography, entry) for the first entry the place is
     in, or (None, "") when it is in none or nothing is configured."""
     icp = getattr(config, "icp", None)
-    entries = list(getattr(icp, "geography", None) or [])
     coords = getattr(icp, "geo_coordinates", None) or {}
     regions = getattr(icp, "regions", None) or {}
-    for i, entry in enumerate(entries):
-        if matches(entry, location, point, coords, regions):
+    for i, entry in enumerate(getattr(icp, "geography", None) or []):
+        if matches_place(entry, place, coords, regions):
             return i, entry
     return None, ""
 
 
-def outside(location: str, config, point: str = "") -> bool:
-    """True when the company is out of territory and must not be emailed:
-    ``icp.outside_geography`` is "skip", Sellbird can place the company in
-    a country, every entry is one it can judge (``placeable``), and the
-    company is in none of them."""
+def outside_place(place: Place | None, config) -> bool:
+    """True when the place is out of territory: ``icp.outside_geography`` is
+    "skip", the place is in a known country, every entry is one Sellbird can
+    judge, and the place is in none of them."""
     icp = getattr(config, "icp", None)
     entries = list(getattr(icp, "geography", None) or [])
     if not entries or (getattr(icp, "outside_geography", "skip") or "skip") != "skip":
         return False
-    if not _country(location, point):
+    if place is None or not place.known:
         return False
     coords = getattr(icp, "geo_coordinates", None) or {}
     regions = getattr(icp, "regions", None) or {}
     if not all(placeable(e, coords, regions) for e in entries):
         return False
-    return tier(location, config, point)[0] is None
+    return tier_place(place, config)[0] is None
+
+
+# Text forms, for free text the reference tables settle on their own
+# (ambiguous text is unknown here: resolve it first, see locations).
+
+def matches(entry: str, location: str, point: str = "", coords: dict | None = None,
+            regions: dict | None = None) -> bool:
+    return matches_place(entry, place_from_text(location, point)[0], coords, regions)
+
+
+def tier(location: str, config, point: str = "") -> tuple[int | None, str]:
+    return tier_place(place_from_text(location, point)[0], config)
+
+
+def outside(location: str, config, point: str = "") -> bool:
+    return outside_place(place_from_text(location, point)[0], config)
 
 
 def rank(location: str, config, point: str = "") -> int:
-    """A sort key: the tier index, or one past the last entry for a company
-    in none, so "no match" sorts after every match and never drops out."""
+    """A sort key: the tier index, or one past the last entry for a place in
+    none, so "no match" sorts after every match and never drops out."""
     index, _ = tier(location, config, point)
     if index is not None:
         return index
@@ -216,11 +202,12 @@ CERTAINTY = {PERSON: 0, COMPANY: 1, PRESENCE: 2, UNKNOWN: 3}
 
 @dataclass(frozen=True)
 class Placement:
-    tier: int | None      # index into icp.geography, None when in no entry
-    entry: str            # that entry, or ""
-    basis: str            # PERSON, COMPANY, PRESENCE or UNKNOWN
-    outside: bool         # out of territory: never emailed
-    where: str            # the location the answer rests on, for reasons
+    tier: int | None        # index into icp.geography, None when in no entry
+    entry: str              # that entry, or ""
+    basis: str              # PERSON, COMPANY, PRESENCE or UNKNOWN
+    outside: bool           # out of territory: never emailed
+    where: str              # the place the answer rests on, for reasons
+    unresolved: tuple = ()  # free text that couldn't be placed: you settle it
 
     def key(self, entries: int) -> tuple[int, int]:
         """Sort key: tier (no tier after every entry), then certainty."""
@@ -230,88 +217,154 @@ class Placement:
         if self.outside:
             return f"outside your geography ({self.where})"
         if self.tier is None:
-            return "location unknown" if self.basis == UNKNOWN else f"in none of your regions ({self.where})"
+            if self.basis == UNKNOWN:
+                return (f"location unknown: \"{'; '.join(self.unresolved)}\" needs you"
+                        if self.unresolved else "location unknown")
+            return f"in none of your regions ({self.where})"
         how = {PERSON: "works in", COMPANY: "company is in",
                PRESENCE: "company has a site in"}[self.basis]
         return f"{self.entry} (priority {self.tier + 1}): {how} {self.where}"
 
 
-def place(config, person: tuple[str, str] | None = None,
-          sites: list[tuple[str, str]] | None = None) -> Placement:
-    """Where a person stands in icp.geography.
+def _key(p: Place) -> tuple:
+    return (p.city.lower(), p.region, p.country)
 
-    ``person`` is their own (location, point), ``sites`` the company's
-    (location, point) list. A person location counts only when Sellbird can
-    place it in a country ("Remote" can't be, so the company stands in)."""
-    if person and person[0].strip() and _country(person[0], person[1]):
-        loc, point = person
-        index, entry = tier(loc, config, point)
-        return Placement(index, entry, PERSON, outside(loc, config, point), loc.strip())
-    known = [(loc.strip(), point) for loc, point in (sites or []) if loc and loc.strip()]
-    known = list(dict(known).items())  # one per distinct location
+
+def place(config, person: Place | None = None, sites: list[Place] | None = None,
+          unresolved: tuple = ()) -> Placement:
+    """Where a person stands in icp.geography: their own place when known,
+    else the company's sites. ``unresolved`` is free text that couldn't be
+    placed, carried so the answer can say what needs you."""
+    if person is not None and person.known:
+        index, entry = tier_place(person, config)
+        return Placement(index, entry, PERSON, outside_place(person, config), person.label())
+    known: list[Place] = []
+    for p in sites or []:
+        if p is not None and p.known and _key(p) not in {_key(k) for k in known}:
+            known.append(p)
     if not known:
-        return Placement(None, "", UNKNOWN, False, "")
-    basis = COMPANY if len(known) == 1 else PRESENCE
-    hits = [(tier(loc, config, point), loc) for loc, point in known]
-    best = min(((t, loc) for t, loc in hits if t[0] is not None),
-               key=lambda h: h[0][0], default=None)
+        return Placement(None, "", UNKNOWN, False, "", tuple(unresolved))
+    basis = COMPANY if len(known) == 1 and not unresolved else PRESENCE
+    hits = [(tier_place(p, config), p) for p in known]
+    best = min(((t, p) for t, p in hits if t[0] is not None), key=lambda h: h[0][0], default=None)
     if best is not None:
-        (index, entry), loc = best
-        return Placement(index, entry, basis, False, loc)
-    gone = all(outside(loc, config, point) for loc, point in known)
-    return Placement(None, "", basis, gone, "; ".join(loc for loc, _ in known)[:200])
+        (index, entry), p = best
+        return Placement(index, entry, basis, False, p.label(), tuple(unresolved))
+    # Out only when every site is known and out: an unplaced one might be in.
+    gone = not unresolved and all(outside_place(p, config) for p in known)
+    return Placement(None, "", basis, gone, "; ".join(p.label() for p in known)[:200],
+                     tuple(unresolved))
 
 
-def company_place(company: dict, observations: list[dict], config) -> Placement:
-    """``place`` for a company with no particular person in mind, from its
-    location field and the newest COMPANY_SITE among ``observations``."""
-    sites = [company.get("location") or ""]
-    rows = sorted((o for o in observations or [] if o.get("signal_code") == "COMPANY_SITE"),
-                  key=lambda o: str(o.get("observed_at") or ""), reverse=True)
-    if rows:
-        sites += split_sites(rows[0].get("value_text") or "")
-    return place(config, None, [(s, "") for s in sites])
+def _latest_site_values(observations: list[dict]) -> list:
+    """Every source's newest COMPANY_SITE (the profile's, your CRM's, yours),
+    so one source's re-read never erases another's."""
+    newest: dict[str, dict] = {}
+    for o in observations or []:
+        if o.get("signal_code") != "COMPANY_SITE":
+            continue
+        src = o.get("collector") or ""
+        if src not in newest or str(o.get("observed_at") or "") > str(newest[src].get("observed_at") or ""):
+            newest[src] = o
+    values: list = []
+    for o in newest.values():
+        values += parse_places(o.get("value_text") or "")
+    return values
 
 
-async def _point_for(state, location: str) -> str:
-    cached = await state.get_setting("geo:" + location.strip().lower()) if location.strip() else ""
-    return "" if not cached or cached == "-" else cached
+def _split(values: list, resolve) -> tuple[list[Place], list[str]]:
+    places, unresolved = [], []
+    for v in values:
+        if isinstance(v, Place):
+            places.append(v)
+            continue
+        text = str(v or "").strip()
+        if not text:
+            continue
+        p, ambiguous = resolve(text)
+        if p:
+            places.append(p)
+        elif ambiguous:
+            unresolved.append(text)
+    return places, unresolved
 
 
-async def company_sites(state, company_id: str, location: str = "") -> list[tuple[str, str]]:
-    """The company's (location, point) list: its own location field, then
-    the offices its site lists (the newest COMPANY_SITE observation)."""
-    places = [location] if location and location.strip() else []
+def company_place(company: dict, observations: list[dict], config,
+                  cache: dict | None = None) -> Placement:
+    """``place`` for a company with no particular person in mind: its
+    location field and every source's newest COMPANY_SITE. ``cache`` holds
+    the place: settings (resolved free text), so nothing is looked up here."""
+    values = _site_values(company.get("location") or "", observations)
+    sites, unresolved = _split(values, lambda t: cached_from(cache or {}, t))
+    return place(config, None, sites, tuple(unresolved))
+
+
+async def _split_async(state, values: list) -> tuple[list[Place], list[str]]:
+    places, unresolved = [], []
+    for v in values:
+        if isinstance(v, Place):
+            places.append(v)
+            continue
+        text = str(v or "").strip()
+        if not text:
+            continue
+        p, ambiguous = await cached_place(state, text)
+        if p:
+            places.append(p)
+        elif ambiguous:
+            unresolved.append(text)
+    return places, unresolved
+
+
+# Sources that state where the company is: they supersede the free-text
+# location field, which holds the same fact from a lower-trust source.
+AUTHORITATIVE = ("you", "crm")
+
+
+def _site_values(location: str, observations: list[dict]) -> list:
+    rows = [o for o in observations or [] if o.get("signal_code") == "COMPANY_SITE"]
+    stated = any((o.get("collector") or "") in AUTHORITATIVE for o in rows)
+    return ([] if stated else [location]) + _latest_site_values(rows)
+
+
+async def company_sites(state, company_id: str, location: str = "") -> tuple[list[Place], list[str]]:
+    """The company's places, and the free text that couldn't be placed."""
+    rows = []
     if company_id:
         rows = await state.get_observations(company_id=company_id, signal_code="COMPANY_SITE",
-                                            latest_only=True, limit=1)
-        if rows:
-            places += split_sites(rows[0].get("value_text") or "")
-    return [(p, await _point_for(state, p)) for p in places]
+                                            limit=50)
+    return await _split_async(state, _site_values(location, rows))
 
 
-async def person_location(state, prospect_id: str) -> str:
+async def person_location(state, prospect_id: str) -> Place | str | None:
     """The person's location: the most confident PERSON_LOCATION, newest
-    first among equals, or ""."""
+    first among equals, as a Place (or older free text), or None."""
     rows = await state.get_prospect_observations(prospect_id, "PERSON_LOCATION")
     rows = [r for r in rows if (r.get("value_text") or "").strip()]
     if not rows:
-        return ""
+        return None
     best = max(rows, key=lambda r: (float(r.get("confidence") or 0), str(r.get("observed_at") or "")))
-    return best["value_text"].strip()
+    parsed = parse_places(best["value_text"])
+    return parsed[0] if parsed else None
 
 
 async def prospect_place(state, prospect, config) -> Placement:
     """``place`` for a prospect, from what Sellbird knows about them and
     their company."""
-    person = await person_location(state, prospect.id) if getattr(prospect, "id", "") else ""
+    person = await person_location(state, prospect.id) if getattr(prospect, "id", "") else None
+    unresolved: list[str] = []
+    if isinstance(person, str):
+        found, ambiguous = await cached_place(state, person)
+        if ambiguous:
+            unresolved.append(person)
+        person = found
     company_id = getattr(prospect, "company_id", "") or ""
     location = ""
     if company_id:
         company = await state.get_company(company_id)
         location = (getattr(company, "location", "") or "") if company else ""
-    sites = await company_sites(state, company_id, location)
-    return place(config, (person, await _point_for(state, person)) if person else None, sites)
+    sites, site_unresolved = await company_sites(state, company_id, location)
+    return place(config, person, sites, tuple(unresolved + site_unresolved))
 
 
 async def prospect_rank(state, prospect, config) -> tuple[int, int]:

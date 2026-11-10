@@ -20,7 +20,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from sellbird.locations import LOCATION_PATHS, MAX_SITES, join_sites, sites_from_schema
+from sellbird.locations import LOCATION_PATHS, MAX_SITES, places_value, sites_from_schema
 from sellbird.public_http import public_http_client
 from sellbird.startups import funding_text
 
@@ -1283,8 +1283,9 @@ class ProfileCollector:
             more = sites_from_schema(html) if html else []
             if more:
                 where = url
-            sites = list(dict.fromkeys(sites + more))
-            add("COMPANY_SITE", num=len(sites), text=join_sites(sites[:MAX_SITES]),
+            seen = {(p.city.lower(), p.region, p.country) for p in sites}
+            sites += [p for p in more if (p.city.lower(), p.region, p.country) not in seen]
+            add("COMPANY_SITE", num=len(sites), text=places_value(sites[:MAX_SITES]) if sites else "",
                 url=where)
 
         # Incumbent agency — the compounding signal

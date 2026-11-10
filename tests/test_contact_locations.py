@@ -8,7 +8,8 @@ import pytest
 
 import sellbird.config as config_mod
 import sellbird.state as state_mod
-from sellbird.cli import _csv_location, cmd_contacts
+from sellbird.cli import cmd_contacts
+from sellbird.locations import Place, row_place
 from sellbird.geography import person_location
 from sellbird.models import Company
 from sellbird.models.prospect import Prospect
@@ -35,11 +36,23 @@ def db(tmp_path, monkeypatch):
     return asyncio.run(seed())
 
 
-def test_locate_records_and_reports_the_tier(db, capsys):
+def test_locate_resolves_and_reports_the_tier(db, capsys, monkeypatch):
     state, pid = db
+    # "Pittsburgh, PA" needs the geocoder (PA is Panama too); fake its answer.
+    async def geocode(text, client=None):
+        return Place("Pittsburgh", "US-PA", "US", 40.44, -79.99)
+    monkeypatch.setattr("sellbird.locations.geocode_place", geocode)
     cmd_contacts(SimpleNamespace(locate=["John@Firm.example", "Pittsburgh, PA"], import_locations=""))
-    assert "United States (priority 2): works in Pittsburgh, PA" in capsys.readouterr().out
-    assert asyncio.run(person_location(state, pid)) == "Pittsburgh, PA"
+    assert "United States (priority 2): works in Pittsburgh, PA, US" in capsys.readouterr().out
+    assert asyncio.run(person_location(state, pid)).region == "US-PA"
+
+
+def test_a_bare_ambiguous_code_is_kept_as_text_that_needs_you(db, capsys):
+    state, pid = db
+    cmd_contacts(SimpleNamespace(locate=["john@firm.example", "DE"], import_locations=""))
+    # Chicago, IL (the company) is ambiguous too: IL is Israel's code.
+    assert 'location unknown: "DE; Chicago, IL" needs you' in capsys.readouterr().out
+    assert asyncio.run(person_location(state, pid)) == "DE"
 
 
 def test_your_location_beats_the_crm(db, tmp_path):
@@ -47,13 +60,45 @@ def test_your_location_beats_the_crm(db, tmp_path):
     csv = tmp_path / "crm.csv"
     csv.write_text("Email,City,State,Country\njohn@firm.example,Seattle,WA,US\n"
                    "nobody@else.example,Portland,OR,US\n,,,\n")
-    cmd_contacts(SimpleNamespace(locate=["john@firm.example", "Pittsburgh, PA"], import_locations=""))
+    cmd_contacts(SimpleNamespace(locate=["john@firm.example", "Austin, TX"], import_locations=""))
     cmd_contacts(SimpleNamespace(locate=None, import_locations=str(csv)))
     # The CRM row is newer, but what you typed is trusted more.
-    assert asyncio.run(person_location(state, pid)) == "Pittsburgh, PA"
+    assert asyncio.run(person_location(state, pid)) == Place("Austin", "US-TX", "US")
 
 
-def test_csv_location_columns():
-    assert _csv_location({"Location": "Seattle, WA"}) == "Seattle, WA"
-    assert _csv_location({"city": "Boise", "state": "ID", "country": ""}) == "Boise, ID"
-    assert _csv_location({"email": "x@y.example"}) == ""
+def test_csv_columns_map_field_by_field():
+    # A country column's "DE" is Germany; a state column's "ID" is Idaho.
+    assert row_place({"City": "Berlin", "Country": "DE"}) == (Place("Berlin", "", "DE"), "")
+    assert row_place({"city": "Boise", "state": "ID", "country": "US"}) == (Place("Boise", "US-ID", "US"), "")
+    assert row_place({"Location": "Seattle, WA"}) == (None, "Seattle, WA")
+    assert row_place({"email": "x@y.example"}) == (None, "")
+
+
+def test_company_locate_supersedes_the_free_text_field(db, capsys):
+    from sellbird.cli import cmd_companies
+    state, _ = db
+    cmd_companies(SimpleNamespace(mark=None, locate=["firm.example", "Berlin, Germany"],
+                                  import_locations="", out=""))
+    assert "outside your geography (Berlin, DE)" in capsys.readouterr().out
+
+
+def test_resolve_text_uses_the_geocoder_only_for_what_the_tables_cant_settle(db):
+    from sellbird.locations import UNRESOLVED, resolve_text
+    state, _ = db
+    asked = []
+
+    async def geocode(text):
+        asked.append(text)
+        return {"Pittsburgh, PA": Place("Pittsburgh", "US-PA", "US"),
+                "Springfield, XX": Place("Springfield", "", "GB")}.get(text)
+
+    async def go():
+        assert (await resolve_text(state, "Seattle, WA", geocode))[0].region == "US-WA"
+        assert (await resolve_text(state, "Pittsburgh, PA", geocode))[0].country == "US"
+        # A bare code that's a country and a state too never reaches the geocoder.
+        assert await resolve_text(state, "DE", geocode) == (None, True)
+        assert await state.get_setting("place:de") == UNRESOLVED
+        # Cached: asked once, ever.
+        await resolve_text(state, "Pittsburgh, PA", geocode)
+    asyncio.run(go())
+    assert asked == ["Pittsburgh, PA"]

@@ -440,6 +440,116 @@ async def _mark_company(domain: str, relationship: str, note: str = "") -> None:
               "and anything queued for it is cancelled on Sellbird's next cycle.\n")
 
 
+async def _locate_companies(args) -> None:
+    """Where companies are, from you (--locate) or a CRM export
+    (--import-locations), stated as COMPANY_SITE so it supersedes the
+    free-text location field."""
+    import csv
+    from sellbird.config import load_config
+    from sellbird.geography import company_place
+    from sellbird.locations import Place, parse_places, place_or_text, places_value, row_place
+    from sellbird.signals import seed_signal_catalog
+    from sellbird.state import StateManager
+
+    state = StateManager()
+    await state.init_db()
+    await seed_signal_catalog(state)
+
+    async def record(domain: str, value: str, source: str) -> bool:
+        company = await state.get_company_by_domain(domain.strip().lower())
+        if company is None:
+            return False
+        places = [p for p in parse_places(value) if isinstance(p, Place)]
+        await state.add_observation(
+            "COMPANY_SITE", company_id=company.id, collector=source,
+            value_text=places_value(places) if places else value,
+            value_num=len(places), confidence=LOCATION_SOURCES[source])
+        return True
+
+    if args.locate:
+        domain, text = args.locate
+        if not await record(domain, await place_or_text(state, text), "you"):
+            print(f"\n  No company with the domain {domain}.\n")
+            return
+        company = await state.get_company_by_domain(domain.strip().lower())
+        obs = await state.get_observations(company_id=company.id, signal_code="COMPANY_SITE")
+        where = company_place({"location": company.location}, obs, load_config())
+        print(f"\n  {company.name or domain}: {where.reason()}\n")
+        return
+    with open(args.import_locations, newline="", encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
+    done = missing = blank = 0
+    for row in rows:
+        domain = next((str(v or "").strip() for k, v in row.items()
+                       if k and k.strip().lower() in ("domain", "website")), "")
+        domain = domain.split("//")[-1].split("/")[0].removeprefix("www.")
+        found, text = row_place(row)
+        value = found.to_json() if found else (await place_or_text(state, text) if text else "")
+        if not domain or not value:
+            blank += 1
+        elif await record(domain, value, "crm"):
+            done += 1
+        else:
+            missing += 1
+    print(f"\n  Recorded {done} company location(s). {missing} domain(s) aren't companies in "
+          f"Sellbird; {blank} row(s) had no domain or location.\n")
+
+
+def cmd_locations(args):
+    """Resolve free-text locations once (tables, then the geocoder), and
+    list what still needs you."""
+    from sellbird.locations import UNRESOLVED, geocode_place, parse_places, resolve_text
+    from sellbird.register import sqlite_query
+    from sellbird.state import DB_PATH, StateManager
+
+    async def _locations():
+        state = StateManager()
+        await state.init_db()
+        query = sqlite_query(DB_PATH)
+        texts: dict[str, str] = {}
+        for c in await query("SELECT domain, location FROM companies WHERE TRIM(location) != ''"):
+            texts.setdefault(c["location"].strip(), c["domain"])
+        for o in await query(
+                "SELECT o.value_text, c.domain FROM observations o "
+                "LEFT JOIN companies c ON c.id = o.company_id "
+                "WHERE o.signal_code IN ('COMPANY_SITE', 'PERSON_LOCATION')"):
+            for v in parse_places(o["value_text"] or ""):
+                if isinstance(v, str) and v.strip():
+                    texts.setdefault(v.strip(), o["domain"] or "")
+        pending = []
+        for text in texts:
+            hit = await state.get_setting("place:" + " ".join(text.split()).lower())
+            if not hit:
+                pending.append(text)
+        print(f"\n  {len(texts)} distinct location(s); {len(pending)} not looked at yet.")
+        calls = [0]
+
+        async def geocode(text):
+            calls[0] += 1
+            return await geocode_place(text)
+
+        for i, text in enumerate(pending):
+            # Only texts the tables can't settle reach the geocoder, at
+            # most one request a second (Nominatim's usage policy).
+            before = calls[0]
+            await resolve_text(state, text, geocode=geocode)
+            if calls[0] != before:
+                await asyncio.sleep(1.1)
+            if i % 25 == 24:
+                print(f"    {i + 1} of {len(pending)}...")
+        needs = [(t, d) for t, d in texts.items()
+                 if await state.get_setting("place:" + " ".join(t.split()).lower()) == UNRESOLVED]
+        if not needs:
+            print("  Every location is placed or names nowhere.\n")
+            return
+        print(f"\n  {len(needs)} location(s) Sellbird can't settle without guessing. Say where each is:\n")
+        for text, domain in sorted(needs, key=lambda x: x[1]):
+            print(f'    sellbird companies --locate {domain or "<domain>"} "<city, country>"   # was "{text}"')
+        print()
+
+    asyncio.run(_locations())
+
+
 def cmd_companies(args):
     """Write the company register to a CSV and summarise it."""
     from collections import Counter
@@ -454,6 +564,9 @@ def cmd_companies(args):
         return
     if getattr(args, "mark", None):
         asyncio.run(_mark_company(*args.mark, note=getattr(args, "note", "")))
+        return
+    if getattr(args, "locate", None) or getattr(args, "import_locations", ""):
+        asyncio.run(_locate_companies(args))
         return
     rows = asyncio.run(build_register(sqlite_query(DB_PATH), load_config()))
     out = Path(args.out) if args.out else (
@@ -581,18 +694,9 @@ async def _redraft(state, args):
 
 # Where a person location came from, and how much it's trusted against
 # another source (sellbird.geography.person_location takes the highest).
+# Where a location came from, and how much it's trusted against another
+# source (sellbird.geography.person_location takes the highest).
 LOCATION_SOURCES = {"you": 1.0, "crm": 0.9}
-LOCATION_COLUMNS = ("location", "person location", "contact location")
-LOCATION_PARTS = ("city", "state", "region", "country")
-
-
-def _csv_location(row: dict) -> str:
-    """A row's location: a location column, else city/state/country joined."""
-    cells = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
-    for key in LOCATION_COLUMNS:
-        if cells.get(key):
-            return cells[key]
-    return ", ".join(cells[k] for k in LOCATION_PARTS if cells.get(k))
 
 
 def cmd_contacts(args):
@@ -600,6 +704,7 @@ def cmd_contacts(args):
     import csv
     from sellbird.config import load_config
     from sellbird.geography import prospect_place
+    from sellbird.locations import place_or_text, row_place
     from sellbird.signals import seed_signal_catalog
     from sellbird.state import StateManager
 
@@ -609,38 +714,41 @@ def cmd_contacts(args):
         await seed_signal_catalog(state)
         config = load_config()
 
-        async def locate(email: str, place: str, source: str) -> str:
+        async def record(email: str, value: str, source: str) -> str:
             prospect = await state.get_prospect_by_email(email.strip().lower())
             if prospect is None:
-                return "no contact"
+                return ""
             await state.add_observation(
                 "PERSON_LOCATION", prospect_id=prospect.id, company_id=prospect.company_id or "",
-                collector=source, value_text=place.strip(), confidence=LOCATION_SOURCES[source])
+                collector=source, value_text=value, confidence=LOCATION_SOURCES[source])
             return (await prospect_place(state, prospect, config)).reason()
 
         if args.locate:
-            email, place = args.locate
-            print(f"\n  {email}: {await locate(email, place, 'you')}\n")
+            email, text = args.locate
+            said = await record(email, await place_or_text(state, text), "you")
+            print(f"\n  {email}: {said or 'no contact with that email'}\n")
             return
         if args.import_locations:
             with open(args.import_locations, newline="", encoding="utf-8-sig") as f:
                 rows = list(csv.DictReader(f))
             done = missing = blank = 0
             for row in rows:
-                cells = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
-                email, place = cells.get("email", ""), _csv_location(row)
-                if not email or not place:
+                email = next((str(v or "").strip() for k, v in row.items()
+                              if k and k.strip().lower() == "email"), "")
+                found, text = row_place(row)
+                value = found.to_json() if found else (await place_or_text(state, text) if text else "")
+                if not email or not value:
                     blank += 1
-                    continue
-                if await locate(email, place, "crm") == "no contact":
-                    missing += 1
-                else:
+                elif await record(email, value, "crm"):
                     done += 1
+                else:
+                    missing += 1
             print(f"\n  Recorded {done} location(s). {missing} email(s) aren't contacts in Sellbird; "
                   f"{blank} row(s) had no email or location.\n")
             return
         print("\n  sellbird contacts --locate EMAIL \"Pittsburgh, PA\"")
-        print("  sellbird contacts --import-locations crm.csv   (columns: email, and location or city/state/country)\n")
+        print("  sellbird contacts --import-locations crm.csv   "
+              "(columns: email, plus city/state/country or one location column)\n")
 
     asyncio.run(_contacts())
 
@@ -1322,6 +1430,10 @@ def main():
                      help="What a company is to you: prospect, competitor, customer or partner. "
                           "Only prospects get cold email")
     sub.add_argument("--note", default="", help="With --mark: why, e.g. 'builds a Splunk AI assistant'")
+    sub.add_argument("--locate", nargs=2, metavar=("DOMAIN", "PLACE"),
+                     help='Where a company is, e.g. --locate firm.example "Berlin, Germany"')
+    sub.add_argument("--import-locations", metavar="CSV", default="",
+                     help="CSV with domain plus city/state/country (or one location) columns, e.g. a CRM export")
     sub.add_argument("--out", default="", help="Output file (default: data/exports/company-register-<date>.csv)")
     sub.set_defaults(func=cmd_companies)
 
@@ -1336,6 +1448,10 @@ def main():
     sub.add_argument("microsoft_action", choices=["auth", "test"],
                      help="auth: one-time sign-in; test: verify connection")
     sub.set_defaults(func=cmd_microsoft)
+
+    # sellbird locations
+    sub = subparsers.add_parser("locations", help="Resolve free-text locations; list what needs you")
+    sub.set_defaults(func=cmd_locations)
 
     # sellbird contacts
     sub = subparsers.add_parser("contacts", help="Record where contacts work (geography)")
