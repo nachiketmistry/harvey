@@ -872,6 +872,100 @@ def cmd_enrich(args):
     asyncio.run(_enrich())
 
 
+def cmd_people(args):
+    """Find the people your segments target at companies you already chose
+    (sellbird.people): names and titles from a people-search provider,
+    addresses found and verified the usual way."""
+    from sellbird.collectors.people import title_matches
+    from sellbird.config import load_config, load_env
+    from sellbird.eligibility import relationship_reason
+    from sellbird.people import FINDERS, active_finder, find_people
+    from sellbird.register import sqlite_query
+    from sellbird.segments import by_key, company_segment, configured, exclusion, priority
+    from sellbird.state import StateManager
+
+    async def _people():
+        state = StateManager()
+        await state.init_db()
+        config, env = load_config(), load_env()
+        print()
+        for f in FINDERS.values():
+            have = "key set" if f.configured(env) else f"no {f.env_key} in .env"
+            print(f"  {f.label:<18} {have}; {await f.remaining(state)} search credit(s) left this month"
+                  " (one per person returned)")
+        segs = configured(config)
+        if not segs:
+            print("\n  People search works per segment: add icp.segments first"
+                  " (docs/configuration.md, Segments).\n")
+            return
+        wanted = [k.strip() for k in (args.segment or "").split(",") if k.strip()]
+        unknown = [k for k in wanted if by_key(config, k) is None]
+        if unknown:
+            print(f"\n  No segment called {', '.join(unknown)}. Yours: "
+                  f"{', '.join(s.key for s in segs)}.\n")
+            return
+        keys = wanted or [s.key for s in segs if s.status == "active"]
+
+        from sellbird.agents.writer import Writer
+        writer = Writer.__new__(Writer)
+        writer.config, writer.state, writer.env = config, state, env
+        fits = await writer._company_fits()     # best-fit companies first
+        rows = await sqlite_query(state.db_path)("SELECT id FROM companies ORDER BY created_at")
+        picked = []
+        for row in rows:
+            a = await company_segment(state, row["id"], config)
+            if a is None or a.key not in keys:
+                continue
+            segment = a.segment(config)
+            if segment is None or segment.status != "active" or not segment.titles:
+                continue
+            rel = await state.get_company_relationship(row["id"])
+            if (rel and relationship_reason(rel["relationship"])) or \
+                    await exclusion(state, row["id"], config):
+                continue
+            company = await state.get_company(row["id"])
+            if company is None or not company.domain:
+                continue
+            on_file = await state.get_prospects_for_company(company.id)
+            if any(p.email_status in ("verified", "risky") and
+                   title_matches(p.title or "", segment.titles) for p in on_file):
+                continue        # already has the right person
+            picked.append((priority(config, a.key), -fits.get(company.id, 0), company, segment))
+        picked.sort(key=lambda t: (t[0], t[1]))
+        todo = picked[:args.limit]
+        finder = active_finder(env, args.provider)
+        print(f"\n  {len(picked)} compan{'y' if len(picked) == 1 else 'ies'} in "
+              f"{', '.join(keys)} with nobody on file whose title the segment targets.")
+        if args.estimate or finder is None:
+            for _, _, c, sg in todo:
+                print(f"    {c.name or c.domain:<34} {c.domain:<26} {sg.name}")
+            if finder is None:
+                print("\n  No people-search provider has a key in .env (PDL_API_KEY).\n")
+            else:
+                print(f"\n  This would search {len(todo)}, at most {args.per_company} people each"
+                      f" (up to {len(todo) * args.per_company} credits; a company with no match costs"
+                      " nothing). Run without --estimate to search.\n")
+            return
+        segments_of = {c.id: sg for _, _, c, sg in todo}
+        out = await find_people(state, env, [c for _, _, c, _ in todo],
+                                lambda c: segments_of[c.id].titles,
+                                per_company=args.per_company, finder=finder, again=args.again)
+        print(f"\n  Searched {out.searched}: {out.no_match} with no match"
+              + (f", {out.skipped_searched} searched before (--again to repeat)" if out.skipped_searched else "")
+              + (f", {out.failed} failed" if out.failed else "") + ".")
+        if out.out_of_allowance:
+            print("  Stopped: the month's search credits are used up.")
+        if out.added:
+            print(f"\n  Added {len(out.added)} people:")
+            for company, p in out.added:
+                name = f"{p.first_name} {p.last_name}"
+                print(f"    {name[:26]:<27}{(p.title or '')[:40]:<41}{company[:24]:<25}"
+                      f"{p.email_status or 'no address'}")
+        print("\n  Next: `sellbird write --preview` shows where they land in the queue.\n")
+
+    asyncio.run(_people())
+
+
 def cmd_locations(args):
     """Resolve free-text locations once (tables, then the geocoder), and
     list what still needs you."""
@@ -1898,6 +1992,16 @@ def main():
     sub.add_argument("--limit", type=int, default=10, help="At most this many people (default 10)")
     sub.add_argument("--estimate", action="store_true", help="Show allowances and what would run, then exit")
     sub.set_defaults(func=cmd_enrich)
+
+    # sellbird people
+    sub = subparsers.add_parser("people", help="Find who your segments target at companies you chose (PDL people search)")
+    sub.add_argument("--segment", default="", help="Segment key(s), comma-separated (default: every active one)")
+    sub.add_argument("--limit", type=int, default=10, help="At most this many companies (default 10)")
+    sub.add_argument("--per-company", type=int, default=2, help="At most this many people per company (default 2)")
+    sub.add_argument("--provider", default="", help="People-search provider (default: the first with a key)")
+    sub.add_argument("--again", action="store_true", help="Search companies searched before")
+    sub.add_argument("--estimate", action="store_true", help="List the companies and the most it could spend, then exit")
+    sub.set_defaults(func=cmd_people)
 
     # sellbird locations
     sub = subparsers.add_parser("locations", help="Resolve free-text locations; list what needs you")
