@@ -632,7 +632,7 @@ def cmd_write(args):
                 size = await company_size(state, p.company_id or "")
                 label = a.label(config) if a else "no segment yet"
                 seg = a.segment(config) if a else None
-                seg_note = f"{label} · {size.label() + ' employees' if size else 'size unknown'} · "
+                seg_note = f"{label} · {size.label() + (' employee' if size.label() == '1' else ' employees') if size else 'size unknown'} · "
                 if p.id in drafting:
                     batch_mix[label] = batch_mix.get(label, 0) + 1
                     doubt = size_doubt(seg, size) if seg else ""
