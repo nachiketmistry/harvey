@@ -1380,6 +1380,17 @@ class StateManager:
             await db.commit()
             return cursor.rowcount
 
+    async def companies_with_live_outreach(self) -> set[str]:
+        """Companies with cold email waiting for review, approved or being
+        sent, so the next drafting batch leaves them for later."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT DISTINCT p.company_id FROM outbox o JOIN prospects p ON p.id = o.prospect_id "
+                "WHERE o.kind = 'sequence' AND o.status IN ('pending_review', 'approved', 'sending') "
+                "AND p.company_id != ''"
+            ) as cursor:
+                return {r[0] for r in await cursor.fetchall()}
+
     async def count_first_drafts_awaiting_review(self) -> int:
         """People with a first cold email waiting for review: the Writer's
         review queue (channels.email.max_awaiting_review)."""

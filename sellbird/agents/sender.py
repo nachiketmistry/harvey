@@ -600,20 +600,30 @@ class Sender:
             )
             return
 
+        await self.stage(then_send=True)
+
+    async def stage(self, then_send: bool = False) -> int:
+        """Put the Writer's new campaigns into the Outbox (each email waits
+        for review when approval is on), and send what's due only when
+        ``then_send``. Returns how many campaigns were staged."""
         # Read once, before staging, so a new thread only goes to an inbox
         # that can send, and each pick sees the threads assigned before it.
         self.inboxes = await self._load_inboxes()
+        staged = 0
         try:
             await self._cancel_excluded()
             for campaign in await self.state.get_campaigns_by_status("draft"):
                 try:
                     await self._stage_campaign_native(campaign)
+                    staged += 1
                 except Exception as e:
                     logger.error(f"Sender: staging '{campaign.name}' failed: {e}")
 
-            await self._drain_due()
+            if then_send:
+                await self._drain_due()
         finally:
             self.inboxes = None
+        return staged
 
     async def _excluded(self, prospect) -> str:
         """Why this person must get no cold email (sellbird.eligibility), or

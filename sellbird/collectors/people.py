@@ -168,6 +168,23 @@ def _clean_for_target(title: str, target: str) -> str:
     return low
 
 
+# Spelled-out C-suite titles and the abbreviation an ICP lists them by:
+# "Chief Information Security Officer" satisfies a "CISO" target.
+_C_SUITE = (
+    (re.compile(r"\bchief\s+information\s+security\s+officer\b", re.I), "ciso"),
+    (re.compile(r"\bchief\s+information\s+officer\b", re.I), "cio"),
+    (re.compile(r"\bchief\s+technology\s+officer\b", re.I), "cto"),
+    (re.compile(r"\bchief\s+executive\s+officer\b", re.I), "ceo"),
+    (re.compile(r"\bchief\s+operating\s+officer\b", re.I), "coo"),
+    (re.compile(r"\bchief\s+financial\s+officer\b", re.I), "cfo"),
+)
+
+
+def _with_abbreviations(title: str) -> str:
+    extra = [abbr for rx, abbr in _C_SUITE if rx.search(title)]
+    return f"{title} ({' '.join(extra)})" if extra else title
+
+
 def title_matches(title: str, targets, owner: bool = False) -> bool:
     """Does a job title satisfy any ICP target title?
 
@@ -185,6 +202,7 @@ def title_matches(title: str, targets, owner: bool = False) -> bool:
         return True
     if not title:
         return False
+    title = _with_abbreviations(title)
     for t in targets:
         cleaned = _clean_for_target(title, t)
         if re.search(rf"(?<![\w-]){re.escape(t)}(?![\w])", cleaned):

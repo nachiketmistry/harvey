@@ -573,6 +573,73 @@ def cmd_competitors(args):
     asyncio.run(_competitors())
 
 
+def cmd_write(args):
+    """The outreach queue in the order Sellbird drafts it, and one drafting
+    pass: the top of the queue gets its email sequence, staged in the Outbox
+    for your review. Nothing is sent."""
+    from sellbird.agents.writer import Writer, persona
+    from sellbird.config import load_config, load_env
+    from sellbird.geography import prospect_place
+    from sellbird.state import StateManager
+
+    async def _write():
+        state = StateManager()
+        await state.init_db()
+        config, env = load_config(), load_env()
+        email = config.channels.email
+        if not args.preview and not getattr(email, "require_approval", True):
+            print("\n  Autopilot is on (channels.email.require_approval: false), so drafts would be"
+                  "\n  sent without review. Turn approval on first, or use --preview.\n")
+            return
+        writer = Writer(None, state, config, env)
+        skipped: dict[str, int] = {}
+        queue = await writer.queue(skipped)
+        room = await writer._review_room()
+        take = len(queue) if room is None else max(room, 0)
+        drafting = {p.id for p in (await writer._batch(queue, take) if room is not None else queue)}
+        fits = await writer._company_fits()
+        persona_label = {2: "target title", 1: "other title", 0: "general inbox"}
+        print(f"\n  Outreach queue: {len(queue)} contact(s) Sellbird may write to, best first"
+              f" (geography: {' > '.join(config.icp.geography or ['anywhere'])}, then fit score).\n")
+        for i, p in enumerate(queue[:args.show], 1):
+            place = await prospect_place(state, p, config)
+            mark = "draft" if p.id in drafting else ""
+            who = " ".join(x for x in (p.first_name, p.last_name) if x) or "General inbox"
+            print(f"  {i:>3}. {mark:<6}{who[:24]:<25}{(p.title or '')[:34]:<35}{(p.company or '')[:26]}")
+            print(f"  {'':<11}{place.reason()} · {persona_label[persona(p, config)]}"
+                  f" · company fit {fits.get(p.company_id or '', 0)} · {p.email_status} email")
+        if room is not None and len(drafting) < min(take, len(queue)):
+            print("\n  (One person per company in a batch: a reply from anyone there stops everyone's"
+                  "\n  sequence, so colleagues wait for a later batch.)")
+        if len(queue) > args.show:
+            print(f"\n  ...and {len(queue) - args.show} more (--show N to see them).")
+        if skipped:
+            print("\n  Left out:")
+            for why, n in sorted(skipped.items(), key=lambda kv: -kv[1]):
+                print(f"    {n:>4}  {why}")
+        if room is not None and room <= 0:
+            print("\n  The review queue is full: review the drafts in the Outbox first"
+                  " (channels.email.max_awaiting_review).\n")
+            return
+        if args.preview or not queue:
+            print()
+            return
+
+        from sellbird.agents.sender import Sender
+        from sellbird.brain import Brain
+        print(f"\n  Drafting the {len(drafting)} marked 'draft'. This takes a few minutes...\n")
+        brain = Brain(state, config.brain)
+        writer = Writer(brain, state, config, env)
+        await writer.run()
+        staged = await Sender(brain, state, config, env).stage()
+        waiting = await state.count_first_drafts_awaiting_review()
+        print(f"\n  {staged} campaign(s) staged; {waiting} contact(s) now have a sequence waiting for"
+              "\n  your review in the Outbox (dashboard Outbox tab, or `sellbird outbox`). Nothing"
+              "\n  is sent until you approve it.\n")
+
+    asyncio.run(_write())
+
+
 def cmd_enrich(args):
     """Look up where your next prospects work, with your enrichment providers."""
     from sellbird.agents.writer import Writer
@@ -1608,6 +1675,12 @@ def main():
     sub.add_argument("microsoft_action", choices=["auth", "test"],
                      help="auth: one-time sign-in; test: verify connection")
     sub.set_defaults(func=cmd_microsoft)
+
+    # sellbird write
+    sub = subparsers.add_parser("write", help="The outreach queue, best first; drafts the top of it for review")
+    sub.add_argument("--preview", action="store_true", help="Show the queue and who'd be drafted, then exit")
+    sub.add_argument("--show", type=int, default=25, help="How many of the queue to list (default 25)")
+    sub.set_defaults(func=cmd_write)
 
     # sellbird enrich
     sub = subparsers.add_parser("enrich", help="Look up where your next prospects work (Hunter, PDL)")

@@ -15,6 +15,7 @@ import re
 from datetime import datetime, timezone
 
 from sellbird.brain import Brain
+from sellbird.collectors.people import owner_rank, title_matches
 from sellbird.config import EmailRulesError, SellbirdConfig, compliance_of, load_email_rules
 from sellbird.eligibility import excluded
 from sellbird.enrichment import enrich
@@ -104,6 +105,20 @@ def footer_rule(config, rules: str) -> str:
     return "\n".join(lines)
 
 
+# How deliverable an address is, best first (the Writer only drafts these).
+EMAIL_ORDER = {"verified": 0, "risky": 1}
+
+
+def persona(prospect, config) -> int:
+    """How well a person's title fits who you sell to: 2 when it matches
+    icp.titles (owners and founders match an owner-type target), 1 for
+    another named person, 0 for a general inbox."""
+    if getattr(prospect, "is_company_inbox", False) or not (getattr(prospect, "first_name", "") or "").strip():
+        return 0
+    titles = getattr(getattr(config, "icp", None), "titles", None) or []
+    return 2 if titles and title_matches(getattr(prospect, "title", "") or "", titles) else 1
+
+
 class Writer:
     def __init__(
         self,
@@ -140,57 +155,9 @@ class Writer:
         if await self.state.get_setting(EMAIL_RULES_PROBLEM_KEY):
             await self.state.delete_setting(EMAIL_RULES_PROBLEM_KEY)
 
-        # Get prospects that haven't been contacted yet
-        new_prospects = await self.state.get_prospects_by_status("new")
-        if not new_prospects:
-            logger.info("Writer: No new prospects to write for.")
-            return
-
-        # Only write for prospects we can actually deliver to. Guessed and
-        # invalid addresses are skipped so we don't spend Claude calls (or
-        # sending reputation) on mail that will bounce.
-        prospects_with_email = [
-            p for p in new_prospects
-            if p.email and (p.email_status or "guess") in WRITABLE_EMAIL_STATUSES
-        ]
-        # Someone at their company already replied: no cold email to write.
-        prospects_with_email = [
-            p for p in prospects_with_email
-            if not await self.state.colleague_who_replied(p.id)
-        ]
+        prospects_with_email = await self.queue()
         if not prospects_with_email:
-            logger.info(
-                "Writer: No prospects with deliverable (verified/risky) emails yet."
-            )
             return
-
-        # channels.email.min_write_score: a prospect scored below it stays
-        # 'new' and is never written for. 0 (the default) keeps everyone.
-        min_score = self._min_write_score()
-        if min_score > 0:
-            kept = [p for p in prospects_with_email if (p.score or 0) >= min_score]
-            skipped = len(prospects_with_email) - len(kept)
-            if skipped:
-                logger.info(
-                    f"Writer: Skipping {skipped} prospect(s) scored below "
-                    f"channels.email.min_write_score ({min_score})."
-                )
-            prospects_with_email = kept
-            if not prospects_with_email:
-                logger.info("Writer: No prospects at or above the minimum score.")
-                return
-
-        # A prospect at a competitor, customer or partner, or out of
-        # territory, stays 'new' and is never written for (sellbird.eligibility).
-        prospects_with_email = await self._eligible(prospects_with_email)
-        if not prospects_with_email:
-            logger.info("Writer: No prospects who may get cold email.")
-            return
-
-        # Batches are capped and leftovers wait a cycle, so the order here is
-        # who gets written to (and sent) first: the earliest icp.geography
-        # entry they're in, then score.
-        prospects_with_email = await self._prioritise(prospects_with_email)
 
         # Look up where the people about to be drafted actually are
         # (sellbird.enrichment, opt-in), then check and rank them again:
@@ -212,7 +179,7 @@ class Writer:
                     "Writer: Review queue is full (channels.email.max_awaiting_review). "
                     "Waiting for you to review the drafts in the Outbox.")
                 return
-            prospects_with_email = prospects_with_email[:room]
+            prospects_with_email = await self._batch(prospects_with_email, room)
 
         # Batch prospects into campaign groups (by industry/title for relevance)
         batches = self._group_prospects(prospects_with_email)
@@ -667,6 +634,74 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             logger.warning(f"Writer: Expected 3 emails, got {len(steps)}.")
         return steps
 
+    async def queue(self, skipped: dict | None = None) -> list:
+        """Everyone the Writer may draft for, in the order it drafts them:
+        'new', a deliverable address, nobody at their company has replied,
+        at or above min_write_score, allowed cold email (sellbird
+        .eligibility), then by geography tier and score. ``skipped``, when
+        given, collects {reason: count} for those left out."""
+        skipped = {} if skipped is None else skipped
+        # Get prospects that haven't been contacted yet
+        new_prospects = await self.state.get_prospects_by_status("new")
+        if not new_prospects:
+            logger.info("Writer: No new prospects to write for.")
+            return []
+
+        # Only write for prospects we can actually deliver to. Guessed and
+        # invalid addresses are skipped so we don't spend Claude calls (or
+        # sending reputation) on mail that will bounce.
+        prospects_with_email = [
+            p for p in new_prospects
+            if p.email and (p.email_status or "guess") in WRITABLE_EMAIL_STATUSES
+        ]
+        if len(prospects_with_email) < len(new_prospects):
+            skipped["no deliverable email (guessed, invalid or none)"] = (
+                len(new_prospects) - len(prospects_with_email))
+        # Someone at their company already replied: no cold email to write.
+        before = len(prospects_with_email)
+        prospects_with_email = [
+            p for p in prospects_with_email
+            if not await self.state.colleague_who_replied(p.id)
+        ]
+        if len(prospects_with_email) < before:
+            skipped["a colleague already replied"] = before - len(prospects_with_email)
+        if not prospects_with_email:
+            logger.info(
+                "Writer: No prospects with deliverable (verified/risky) emails yet."
+            )
+            return []
+
+        # channels.email.min_write_score: a prospect scored below it stays
+        # 'new' and is never written for. 0 (the default) keeps everyone.
+        min_score = self._min_write_score()
+        if min_score > 0:
+            kept = [p for p in prospects_with_email if (p.score or 0) >= min_score]
+            below = len(prospects_with_email) - len(kept)
+            if below:
+                skipped["scored below channels.email.min_write_score"] = below
+                logger.info(
+                    f"Writer: Skipping {below} prospect(s) scored below "
+                    f"channels.email.min_write_score ({min_score})."
+                )
+            prospects_with_email = kept
+            if not prospects_with_email:
+                logger.info("Writer: No prospects at or above the minimum score.")
+                return []
+
+        # A prospect at a competitor, customer or partner, or out of
+        # territory, stays 'new' and is never written for (sellbird.eligibility).
+        prospects_with_email = await self._eligible(prospects_with_email, skipped)
+        if not prospects_with_email:
+            logger.info("Writer: No prospects who may get cold email.")
+            return []
+
+        # Batches are capped and leftovers wait a cycle, so the order here is
+        # who gets written to (and sent) first: the earliest icp.geography
+        # entry they're in, then score.
+        prospects_with_email = await self._prioritise(prospects_with_email)
+
+        return prospects_with_email
+
     async def _enrich(self, prospects: list) -> bool:
         """Enrichment lookups for the front of the queue. True when any
         person or company got a location. Never stops writing."""
@@ -719,9 +754,10 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             "They never override the FACTS rule:\n" + pairs
         )
 
-    async def _eligible(self, prospects: list) -> list:
+    async def _eligible(self, prospects: list, skipped: dict | None = None) -> list:
         """Prospects who may get cold email (sellbird.eligibility): not at a
-        competitor, customer or partner, and not out of territory."""
+        competitor, customer or partner, and not out of territory. ``skipped``
+        collects {reason: count}."""
         kept, why = [], []
         for p in prospects:
             try:
@@ -730,6 +766,10 @@ Return ONLY a JSON array (no markdown fences, no commentary):
                 logger.debug(f"Writer: eligibility check failed for {p.id}: {e}")
                 reason = ""
             (why if reason else kept).append(reason or p)
+            if reason and skipped is not None:
+                # "outside your geography (Hong Kong)" counts under its kind
+                kind = reason.split(" (")[0]
+                skipped[kind] = skipped.get(kind, 0) + 1
         if why:
             logger.info(
                 f"Writer: Skipping {len(why)} prospect(s) who may not get cold email "
@@ -738,15 +778,56 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         return kept
 
     async def _prioritise(self, prospects: list) -> list:
-        """Prospects by geography tier, then score; ties keep their order."""
-        ranks = {}
+        """The drafting order, as lead scoring does it (fit plus persona):
+        geography tier first (your icp.geography order), then whether their
+        title is one you target (icp.titles), how sure Sellbird is of where
+        they are, the company's fit (sellbird.fit), seniority (an owner or
+        founder before a VP, so the batch's one person per company is the
+        one who decides), how deliverable the address is, and the
+        prospect's own score."""
+        entries = len(getattr(getattr(self.config, "icp", None), "geography", None) or [])
+        fits = await self._company_fits()
+        keys = {}
         for p in prospects:
             try:
-                ranks[p.id] = await prospect_rank(self.state, p, self.config)
+                tier, certainty = await prospect_rank(self.state, p, self.config)
             except Exception as e:
                 logger.debug(f"Writer: geography rank failed for {p.id}: {e}")
-                ranks[p.id] = (len(self.config.icp.geography or []), CERTAINTY[UNKNOWN])
-        return sorted(prospects, key=lambda p: (ranks[p.id], -(p.score or 0)))
+                tier, certainty = entries, CERTAINTY[UNKNOWN]
+            keys[p.id] = (tier, -persona(p, self.config), certainty,
+                          -fits.get(p.company_id or "", 0),
+                          -owner_rank(getattr(p, "title", "") or ""),
+                          EMAIL_ORDER.get(getattr(p, "email_status", "") or "", len(EMAIL_ORDER)),
+                          -(p.score or 0))
+        return sorted(prospects, key=lambda p: keys[p.id])
+
+    async def _batch(self, queue: list, room: int) -> list:
+        """The next ``room`` people to draft, best first, one per company:
+        a reply from anyone there stops everyone's sequence, so a second
+        contact at the same account waits for a later batch, as does anyone
+        at a company that already has email waiting for you or queued."""
+        busy = await self.state.companies_with_live_outreach()
+        picked, seen = [], set(busy)
+        for p in queue:
+            if len(picked) >= room:
+                break
+            account = p.company_id or (p.email or "").split("@")[-1].lower()
+            if account and account in seen:
+                continue
+            seen.add(account)
+            picked.append(p)
+        return picked
+
+    async def _company_fits(self) -> dict[str, int]:
+        """Each company's fit, 0-100 (sellbird.fit, via the register). An
+        empty map when it can't be read: the order then rests on the rest."""
+        try:
+            from sellbird.register import build_register, sqlite_query
+            return {r["id"]: r["fit"] for r in
+                    await build_register(sqlite_query(self.state.db_path), self.config)}
+        except Exception as e:
+            logger.debug(f"Writer: company fit unavailable: {e}")
+            return {}
 
     def _group_prospects(self, prospects: list) -> dict[str, list]:
         """Group prospects into campaign batches by industry/title combo."""

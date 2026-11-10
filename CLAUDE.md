@@ -344,6 +344,7 @@ sellbird companies             # Company register CSV: every company, its fit sc
 sellbird companies --mark DOMAIN competitor [--note why]   # Or customer/partner: never cold-emailed (prospect undoes it)
 sellbird gmail auth            # One-time Gmail OAuth (when provider: gmail)
 sellbird gmail test            # Verify the Gmail connection
+sellbird write --preview       # The outreach queue, best first, and who the next review batch is; `sellbird write` drafts it (nothing sent)
 sellbird competitors           # Competitor profiles; --add NAME --domain D / --aliases-for / --battlecard-for / --import-battlecards
 sellbird contacts --locate EMAIL "City, ST"   # Where a contact works (geography places people by it); --import-locations crm.csv
 sellbird companies --locate DOMAIN "City, Country"   # Where a company is; --import-locations companies.csv
