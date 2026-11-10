@@ -166,3 +166,10 @@ def test_a_disagreeing_less_trusted_source_does_not_refine(state):
     asyncio.run(state.add_observation("PERSON_LOCATION", prospect_id=p.id, collector="hunter",
                                       value_text=Place("Seattle", "US-WA", "US").to_json(), confidence=0.75))
     assert asyncio.run(person_location(state, p.id)) == Place(country="CA")
+
+
+def test_lowercase_provider_city_is_title_cased():
+    from sellbird.locations import place_from_fields
+    place = place_from_fields("san francisco", "california", "united states")
+    assert (place.city, place.region, place.country) == ("San Francisco", "US-CA", "US")
+    assert place_from_fields("McAllen", "TX", "US").city == "McAllen"

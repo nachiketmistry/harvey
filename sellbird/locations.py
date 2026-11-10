@@ -206,6 +206,9 @@ def place_from_fields(city="", region="", country="") -> Place | None:
         hits = [(c, r) for c in ("US", "CA", "AU") for r in [region_from_field(region, c)] if r]
         code, region_code = hits[0] if len(hits) == 1 else ("", "")
     city = " ".join(str(city or "").split())
+    if city.islower():
+        # Some providers (People Data Labs) lowercase every field.
+        city = city.title()
     if not (code or city):
         return None
     return Place(city=city, region=region_code, country=code)
