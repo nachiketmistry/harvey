@@ -13,7 +13,7 @@ from sellbird.agents.writer import Writer
 from sellbird.fit import company_fit
 from sellbird.geography import (
     COMPANY, PERSON, PRESENCE, UNKNOWN, matches, outside, place, prospect_place, rank, tier,
-    tier_place,
+    company_place, tier_place,
 )
 from sellbird.locations import Place, places_value
 
@@ -246,3 +246,15 @@ def test_fit_counts_a_local_office():
               "value_text": places_value([P("Chicago", "US-IL", "US"), P("Bellevue", "US-WA", "US")])}]
     reasons = company_fit(company, [], sites, config(geography=PNW, coords={}))[1]
     assert "location: Pacific Northwest (priority 1): company has a site in Bellevue, WA, US" in reasons
+
+
+def test_a_source_declared_to_write_countries_settles_bare_codes():
+    cfg = config(geography=PNW, coords={})
+    company = {"location": "DE", "source": "drew-crm"}
+    assert company_place(company, [], cfg, {}).unresolved == ("DE",)
+    declared = {"location-format:drew-crm": "countries"}
+    p = company_place(company, [], cfg, declared)
+    assert p.outside and p.where == "DE"
+    # Only that source, and only bare codes: "Dover, DE" is still Delaware.
+    assert company_place({"location": "DE", "source": "other"}, [], cfg, declared).unresolved == ("DE",)
+    assert company_place({"location": "Dover, DE, USA", "source": "drew-crm"}, [], cfg, declared).tier == 1

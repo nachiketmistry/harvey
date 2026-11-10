@@ -498,7 +498,10 @@ async def _locate_companies(args) -> None:
 def cmd_locations(args):
     """Resolve free-text locations once (tables, then the geocoder), and
     list what still needs you."""
-    from sellbird.locations import UNRESOLVED, geocode_place, parse_places, resolve_text
+    from sellbird.locations import (
+        CODES_ARE_COUNTRIES, SOURCE_FORMAT, UNRESOLVED, from_source, geocode_place, parse_places,
+        place_from_text, resolve_text,
+    )
     from sellbird.register import sqlite_query
     from sellbird.state import DB_PATH, StateManager
 
@@ -506,22 +509,42 @@ def cmd_locations(args):
         state = StateManager()
         await state.init_db()
         query = sqlite_query(DB_PATH)
-        texts: dict[str, str] = {}
-        for c in await query("SELECT domain, location FROM companies WHERE TRIM(location) != ''"):
-            texts.setdefault(c["location"].strip(), c["domain"])
+        if args.source:
+            if args.codes_are != "countries":
+                print("\n  Use --codes-are countries with --source.\n")
+                return
+            n = (await query("SELECT COUNT(*) AS n FROM companies WHERE source = ?", (args.source,)))[0]["n"]
+            if not n:
+                print(f"\n  No companies came from '{args.source}'.\n")
+                return
+            await state.set_setting(SOURCE_FORMAT + args.source, CODES_ARE_COUNTRIES)
+            print(f"\n  Done: a bare code in the location of {n} {args.source} companies now reads "
+                  "as a country (\"DE\" is Germany).\n")
+            return
+        texts: dict[str, list[str]] = {}
+        declared = {r["key"][len(SOURCE_FORMAT):] for r in await query(
+            "SELECT key FROM settings WHERE key LIKE ?", (SOURCE_FORMAT + "%",))}
+        bare: dict[str, int] = {}
+        for c in await query("SELECT domain, location, source FROM companies WHERE TRIM(location) != ''"):
+            text = c["location"].strip()
+            if c["source"] in declared and from_source(text, CODES_ARE_COUNTRIES):
+                continue  # read by its source's declared format
+            texts.setdefault(text, []).append(c["domain"])
+            if len(text) <= 3 and text.isalpha():
+                bare[c["source"] or ""] = bare.get(c["source"] or "", 0) + 1
         for o in await query(
                 "SELECT o.value_text, c.domain FROM observations o "
                 "LEFT JOIN companies c ON c.id = o.company_id "
                 "WHERE o.signal_code IN ('COMPANY_SITE', 'PERSON_LOCATION')"):
             for v in parse_places(o["value_text"] or ""):
                 if isinstance(v, str) and v.strip():
-                    texts.setdefault(v.strip(), o["domain"] or "")
+                    texts.setdefault(v.strip(), []).append(o["domain"] or "")
         pending = []
         for text in texts:
             hit = await state.get_setting("place:" + " ".join(text.split()).lower())
-            if not hit:
-                pending.append(text)
-        print(f"\n  {len(texts)} distinct location(s); {len(pending)} not looked at yet.")
+            if not hit and place_from_text(text)[1]:
+                pending.append(text)  # the tables can't settle it; never asked before
+        print(f"\n  {len(texts)} distinct location(s); {len(pending)} to look up.")
         calls = [0]
 
         async def geocode(text):
@@ -542,9 +565,16 @@ def cmd_locations(args):
         if not needs:
             print("  Every location is placed or names nowhere.\n")
             return
-        print(f"\n  {len(needs)} location(s) Sellbird can't settle without guessing. Say where each is:\n")
-        for text, domain in sorted(needs, key=lambda x: x[1]):
-            print(f'    sellbird companies --locate {domain or "<domain>"} "<city, country>"   # was "{text}"')
+        print(f"\n  {len(needs)} location(s) Sellbird can't settle without guessing.")
+        for source, n in sorted(bare.items(), key=lambda x: -x[1]):
+            if source:
+                print(f"\n  {n} companies from {source} have a bare code like \"DE\" as their location. If "
+                      f"{source} writes a country that way, settle them all at once:\n"
+                      f"    sellbird locations --source {source} --codes-are countries")
+        print("\n  Or say where each one is:\n")
+        for text, domains in sorted(needs):
+            for domain in sorted(set(domains)):
+                print(f'    sellbird companies --locate {domain or "<domain>"} "<city, country>"   # was "{text}"')
         print()
 
     asyncio.run(_locations())
@@ -1451,6 +1481,9 @@ def main():
 
     # sellbird locations
     sub = subparsers.add_parser("locations", help="Resolve free-text locations; list what needs you")
+    sub.add_argument("--source", default="", help="A source whose location field you're describing (e.g. drew-crm)")
+    sub.add_argument("--codes-are", default="", choices=["", "countries"],
+                     help="With --source: a bare code in its location field is a country")
     sub.set_defaults(func=cmd_locations)
 
     # sellbird contacts

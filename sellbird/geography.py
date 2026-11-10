@@ -292,14 +292,16 @@ def _split(values: list, resolve) -> tuple[list[Place], list[str]]:
 def company_place(company: dict, observations: list[dict], config,
                   cache: dict | None = None) -> Placement:
     """``place`` for a company with no particular person in mind: its
-    location field and every source's newest COMPANY_SITE. ``cache`` holds
-    the place: settings (resolved free text), so nothing is looked up here."""
+    location field (read by its source's declared format) and every
+    source's newest COMPANY_SITE. ``cache`` holds the place: and
+    location-format: settings, so nothing is looked up here."""
     values = _site_values(company.get("location") or "", observations)
-    sites, unresolved = _split(values, lambda t: cached_from(cache or {}, t))
+    source = company.get("source") or ""
+    sites, unresolved = _split(values, lambda t: cached_from(cache or {}, t, "", source))
     return place(config, None, sites, tuple(unresolved))
 
 
-async def _split_async(state, values: list) -> tuple[list[Place], list[str]]:
+async def _split_async(state, values: list, source: str = "") -> tuple[list[Place], list[str]]:
     places, unresolved = [], []
     for v in values:
         if isinstance(v, Place):
@@ -327,13 +329,16 @@ def _site_values(location: str, observations: list[dict]) -> list:
     return ([] if stated else [location]) + _latest_site_values(rows)
 
 
-async def company_sites(state, company_id: str, location: str = "") -> tuple[list[Place], list[str]]:
-    """The company's places, and the free text that couldn't be placed."""
+async def company_sites(state, company_id: str, location: str = "",
+                        source: str = "") -> tuple[list[Place], list[str]]:
+    """The company's places, and the free text that couldn't be placed.
+    ``source`` is where the company came from, whose declared format reads
+    its location field."""
     rows = []
     if company_id:
         rows = await state.get_observations(company_id=company_id, signal_code="COMPANY_SITE",
                                             limit=50)
-    return await _split_async(state, _site_values(location, rows))
+    return await _split_async(state, _site_values(location, rows), source)
 
 
 async def person_location(state, prospect_id: str) -> Place | str | None:
@@ -359,11 +364,12 @@ async def prospect_place(state, prospect, config) -> Placement:
             unresolved.append(person)
         person = found
     company_id = getattr(prospect, "company_id", "") or ""
-    location = ""
+    location = source = ""
     if company_id:
         company = await state.get_company(company_id)
         location = (getattr(company, "location", "") or "") if company else ""
-    sites, site_unresolved = await company_sites(state, company_id, location)
+        source = (getattr(company, "source", "") or "") if company else ""
+    sites, site_unresolved = await company_sites(state, company_id, location, source)
     return place(config, person, sites, tuple(unresolved + site_unresolved))
 
 

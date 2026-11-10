@@ -269,9 +269,30 @@ def _cache_key(text: str) -> str:
     return PLACE_CACHE + " ".join(str(text or "").split()).lower()
 
 
-def cached_from(cache: dict, text: str, point: str = "") -> tuple[Place | None, bool]:
+# What a source writes in a company's location field, as you declared it
+# (`sellbird locations --source drew-crm --codes-are countries`): a field
+# mapping, the way CRM integrations declare what each column means.
+SOURCE_FORMAT = "location-format:"
+CODES_ARE_COUNTRIES = "countries"
+
+
+def from_source(text: str, source_format: str) -> Place | None:
+    """A location field read by its source's declared format: with
+    "countries", a bare code is that country ("DE" is Germany)."""
+    if source_format == CODES_ARE_COUNTRIES and _bare_code(text):
+        code = country_from_field(text)
+        return Place(country=code) if code else None
+    return None
+
+
+def cached_from(cache: dict, text: str, point: str = "", source: str = "") -> tuple[Place | None, bool]:
     """resolve_text's answer from a dict of cached settings, without the
-    network: the cache (filled by resolve_text, or by you), else the tables."""
+    network: the source's declared format, the cache (filled by
+    resolve_text, or by you), else the tables."""
+    if source:
+        declared = from_source(text, cache.get(SOURCE_FORMAT + source, ""))
+        if declared:
+            return declared, False
     hit = cache.get(_cache_key(text))
     if hit == UNRESOLVED:
         return None, True
@@ -284,10 +305,13 @@ def cached_from(cache: dict, text: str, point: str = "") -> tuple[Place | None, 
     return place_from_text(text, point)
 
 
-async def cached_place(state, text: str, point: str = "") -> tuple[Place | None, bool]:
-    """cached_from, reading the one setting this text needs."""
+async def cached_place(state, text: str, point: str = "", source: str = "") -> tuple[Place | None, bool]:
+    """cached_from, reading only the settings this text needs."""
     key = _cache_key(text)
-    return cached_from({key: await state.get_setting(key)}, text, point)
+    cache = {key: await state.get_setting(key)}
+    if source:
+        cache[SOURCE_FORMAT + source] = await state.get_setting(SOURCE_FORMAT + source)
+    return cached_from(cache, text, point, source)
 
 
 async def geocode_place(text: str, client=None) -> Place | None:

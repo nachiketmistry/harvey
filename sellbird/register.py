@@ -135,7 +135,7 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
     # Resolved free-text locations (sellbird.locations): read once, so
     # placing a company here never looks anything up.
     places = {r["key"]: r["value"] for r in await query_db(
-        "SELECT key, value FROM settings WHERE key LIKE 'place:%'")}
+        "SELECT key, value FROM settings WHERE key LIKE 'place:%' OR key LIKE 'location-format:%'")}
     try:
         relationships = {r["company_id"]: r for r in await query_db(
             "SELECT company_id, relationship, note FROM company_relationships WHERE 1=1"
