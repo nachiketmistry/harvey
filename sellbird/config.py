@@ -59,10 +59,47 @@ class ProductConfig(BaseModel):
     offer: OfferConfig = OfferConfig()
 
 
+class SegmentConfig(BaseModel):
+    """One kind of company you sell to, and how (sellbird.segments).
+
+    An ICP usually holds more than one buyer: an in-house team buys the
+    product, a consultancy might partner on it, a large integrator comes
+    later. Each segment has its own size bounds and its own playbook (the
+    offer and angle the Writer and reply handler use), and its status says
+    whether to pursue it now ("active"), park it ("later") or never write to
+    it ("never"). Earlier segments are drafted first."""
+    key: str
+    name: str
+    # What a company in this segment looks like, in plain words: the
+    # classifier reads it to propose each company's segment.
+    description: str = ""
+    min_employees: int | None = None
+    max_employees: int | None = None
+    # Who to write to at these companies: an in-house team's engineer, a
+    # partner's founder. Empty: icp.titles.
+    titles: list[str] = []
+    # A skill name (skills/<playbook>.md): the offer, angle and call to
+    # action for this segment, added to the Writer's and handler's prompts.
+    playbook: str = ""
+    status: Literal["active", "later", "never"] = "active"
+
+    @field_validator("key")
+    @classmethod
+    def _slug(cls, v):
+        v = (v or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", v):
+            raise ValueError("a segment key is lowercase letters, digits and _ (like in_house)")
+        return v
+
+
 class ICPConfig(BaseModel):
     industries: list[str]
     company_size: str
     titles: list[str]
+    # The kinds of company you sell to, in priority order, each with its own
+    # size bounds, playbook and status (see SegmentConfig). Empty: one
+    # undivided ICP, as before.
+    segments: list[SegmentConfig] = []
     # The territory, in priority order: earlier entries are written to (and
     # sent) first. An entry is a place ("Seattle, WA"), a country ("United
     # States") or a region ("Pacific Northwest", "Americas", or one defined
@@ -95,6 +132,15 @@ class ICPConfig(BaseModel):
     # Each variant runs in every city alongside the industry itself, so the
     # estimate grows with it. Empty → each industry is its own one search.
     keyword_variants: dict[str, list[str]] = {}
+
+    @field_validator("segments")
+    @classmethod
+    def _unique_segments(cls, v):
+        keys = [s.key for s in v]
+        dupes = sorted({k for k in keys if keys.count(k) > 1})
+        if dupes:
+            raise ValueError(f"segment keys must be unique: {', '.join(dupes)}")
+        return v
 
 
 class WarmupConfig(BaseModel):

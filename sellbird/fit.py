@@ -69,11 +69,13 @@ def current_roles(observations: list[dict]) -> list[dict]:
 
 def company_fit(company: dict, prospects: list[dict], observations: list[dict],
                 config, dnc: list[str] | None = None,
-                places: dict | None = None) -> tuple[int, list[str]]:
+                places: dict | None = None, titles: list[str] | None = None) -> tuple[int, list[str]]:
     """(score, reasons) for one company. ``prospects`` and ``observations``
     are that company's rows, as dicts. ``dnc`` is the do-not-contact list
-    (default: the config's)."""
+    (default: the config's). ``titles`` are who to write to there (its
+    segment's titles; default icp.titles)."""
     icp = config.icp
+    titles = titles or icp.titles
     if dnc is None:
         dnc = getattr(getattr(config, "compliance", None), "do_not_contact", None) or []
     domain = (company.get("domain") or "").lower()
@@ -97,13 +99,13 @@ def company_fit(company: dict, prospects: list[dict], observations: list[dict],
     live = [p for p in prospects if (p.get("status") or "") not in DEAD_STATUSES
             and not (dnc and p.get("email") and do_not_contact_match(p["email"], dnc))]
     named = [p for p in live if (p.get("first_name") or "").strip()]
-    makers = [p for p in named if icp.titles and title_matches(p.get("title") or "", icp.titles)]
+    makers = [p for p in named if titles and title_matches(p.get("title") or "", titles)]
     if not makers:
         # Names the site lists that Sellbird didn't turn into contacts.
         for o in observations:
             if o.get("signal_code") == "DECISION_MAKER_TITLE":
                 title = (o.get("value_text") or "").split("—", 1)[-1].strip(" ~()")
-                if icp.titles and title_matches(title, icp.titles):
+                if titles and title_matches(title, titles):
                     makers.append({"title": title, "first_name": ""})
                     break
     if makers:

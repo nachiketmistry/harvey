@@ -30,6 +30,8 @@ from sellbird.models.conversation import Conversation, Message
 from sellbird.send_window import recipient_zone
 from sellbird.state import COLLEAGUE_REPLIED, REVIEW_NEXT_REPLY_KEY, StateManager
 from sellbird.sending_mode import sync_sending_mode
+from sellbird.segments import playbook_block as segment_playbook
+from sellbird.segments import prompt_facts as segment_facts
 from sellbird.startups import startup_facts
 from sellbird.untrusted import UNTRUSTED_RULE, fence
 
@@ -1349,6 +1351,14 @@ NEXT STEP
             playbook = self.brain.load_skill("selling_to_startups")
             if playbook:
                 prompt += "\n\nSELLING TO STARTUP FOUNDERS\n" + playbook
+        # The playbook for the company's segment (sellbird.segments): an
+        # in-house buyer and a would-be partner want different next steps.
+        try:
+            _, segment = await segment_facts(self.state, getattr(prospect, "company_id", "") or "",
+                                             self.config)
+        except Exception:
+            segment = None
+        prompt += segment_playbook(self.brain, segment)
         if competitors:
             # Your battlecard for each competitor they named
             # (sellbird.competitors), after the general competitive intel.

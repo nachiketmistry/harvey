@@ -4,7 +4,9 @@ Enrichment providers (Hunter, People Data Labs) keep cleaned, structured
 records of people and companies, sourced under their own terms. A lookup
 here asks one of them where a person works or where a company is, and
 stores the answer as a PERSON_LOCATION or COMPANY_SITE observation
-(``collector`` = the provider), field by field into a ``Place``. It then
+(``collector`` = the provider), field by field into a ``Place``. A company
+lookup also returns its headcount, stored as EMPLOYEE_COUNT for your
+segments' size bounds (``sellbird.segments``). It then
 takes part in the same precedence as everything else: what you state wins,
 then your CRM, then providers, then what Sellbird read on the company's
 own site and its free-text location.
@@ -18,16 +20,19 @@ draft, so a free tier's allowance lands on your best prospects first.
 What each free tier returns (checked November 2026; plans change):
 
 - Hunter: a person's or company's city, state and country (Clearbit
-  format), one credit a lookup from the account's shared allowance.
+  format), and a company's employee range, one credit a lookup from the
+  account's shared allowance.
 - People Data Labs: 100 lookups a month, but the free plan hides a
   person's city and region and returns only country and continent; a
-  company's location is returned in full. Paid plans return everything.
+  company's location and headcount are returned in full. Paid plans
+  return everything.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import httpx
@@ -91,8 +96,20 @@ class EnrichmentProvider:
     async def person(self, client, key: str, state, prospect, company) -> Place | None:
         return None
 
-    async def company(self, client, key: str, state, company) -> Place | None:
+    async def company(self, client, key: str, state, company) -> "CompanyFacts | None":
         return None
+
+
+@dataclass(frozen=True)
+class CompanyFacts:
+    """What one company lookup returned: where it is, and its headcount as
+    the provider wrote it ("1001-5000", "1K-5K", 250)."""
+    place: Place | None = None
+    employees: object = None
+
+    @property
+    def known(self) -> bool:
+        return bool((self.place and self.place.known) or self.employees)
 
 
 class Hunter(EnrichmentProvider):
@@ -132,11 +149,15 @@ class Hunter(EnrichmentProvider):
         data = await self._get(client, "people/find", {"email": prospect.email}, key, state)
         return self._geo(data) if data else None
 
-    async def company(self, client, key, state, company) -> Place | None:
+    async def company(self, client, key, state, company) -> CompanyFacts | None:
         if not getattr(company, "domain", ""):
             return None
         data = await self._get(client, "companies/find", {"domain": company.domain}, key, state)
-        return self._geo(data) if data else None
+        if not data:
+            return None
+        metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+        employees = metrics.get("employeesRange") or metrics.get("employees")
+        return CompanyFacts(self._geo(data), employees if not isinstance(employees, bool) else None)
 
 
 class PeopleDataLabs(EnrichmentProvider):
@@ -165,15 +186,17 @@ class PeopleDataLabs(EnrichmentProvider):
                                  _text(data.get("location_region")),
                                  _text(data.get("location_country")))
 
-    async def company(self, client, key, state, company) -> Place | None:
+    async def company(self, client, key, state, company) -> CompanyFacts | None:
         if not getattr(company, "domain", ""):
             return None
         data = await self._get(client, "company/enrich", {"website": company.domain}, key, state)
-        loc = (data or {}).get("location") or {}
-        if not isinstance(loc, dict):
+        if not data:
             return None
-        return place_from_fields(_text(loc.get("locality")), _text(loc.get("region")),
-                                 _text(loc.get("country")))
+        loc = data.get("location") if isinstance(data.get("location"), dict) else {}
+        place = place_from_fields(_text(loc.get("locality")), _text(loc.get("region")),
+                                  _text(loc.get("country"))) if loc else None
+        employees = data.get("employee_count") or _text(data.get("size"))
+        return CompanyFacts(place, employees if not isinstance(employees, bool) else None)
 
 
 PROVIDERS = {p.key: p for p in (Hunter(), PeopleDataLabs())}
@@ -214,13 +237,11 @@ async def enrich(state, config, env, prospects: list, limit: int,
         for prospect in prospects:
             if done["looked_up"] >= limit:
                 break
-            if (await prospect_place(state, prospect, config)).basis == PERSON:
-                done["skipped_known"] += 1
-                continue  # where they work is already known
             company = (await state.get_company(prospect.company_id)
                        if getattr(prospect, "company_id", "") else None)
-            asked_any = person_found = site_found = placed = False
-            for provider in providers:
+            known = (await prospect_place(state, prospect, config)).basis == PERSON
+            asked_any = person_found = placed = False
+            for provider in ([] if known else providers):
                 key = provider.api_key(env)
                 if not person_found and not await _asked(state, provider, "person", prospect.id) \
                         and await provider.remaining(state) > 0:
@@ -236,18 +257,13 @@ async def enrich(state, config, env, prospects: list, limit: int,
                         # A country alone (a free plan) leaves the city to
                         # the next provider; a city settles it.
                         person_found = bool(found.city or found.region)
-                if company is not None and not site_found \
-                        and not await _asked(state, provider, "company", company.id) \
-                        and await provider.remaining(state) > 0:
-                    asked_any = True
-                    await state.set_setting(f"{ASKED}{provider.key}:company:{company.id}", "1")
-                    site = await _safe(provider.company, client, key, state, company)
-                    if site and site.known:
-                        await state.add_observation(
-                            "COMPANY_SITE", company_id=company.id, collector=provider.key,
-                            value_text=places_value([site]), value_num=1,
-                            confidence=CONFIDENCE[provider.key])
-                        site_found = True
+            if company is not None:
+                # Where the company is (when the person isn't placed) and
+                # its headcount (for your segments' size bounds).
+                asked_any |= await _look_up_company(state, providers, env, client, company,
+                                                    want_site=not known)
+            if known and not asked_any:
+                done["skipped_known"] += 1
             if asked_any:
                 done["looked_up"] += 1
             if placed:
@@ -258,7 +274,73 @@ async def enrich(state, config, env, prospects: list, limit: int,
     return done
 
 
-async def _safe(call, *args) -> Place | None:
+async def _look_up_company(state, providers, env, client, company, want_site: bool = True) -> bool:
+    """Ask providers in turn where a company is and how many people it
+    employs, until both are known, never asking one twice for the same
+    thing. True when any provider was asked."""
+    from sellbird.segments import company_size, record_size
+
+    asked = False
+    site_found = not want_site
+    sized = await company_size(state, company.id, company) is not None
+    for provider in providers:
+        if site_found and sized:
+            break
+        need_site = not site_found and not await _asked(state, provider, "company", company.id)
+        need_size = not sized and not await _asked(state, provider, "company_size", company.id)
+        if not (need_site or need_size) or await provider.remaining(state) <= 0:
+            continue
+        asked = True
+        await state.set_setting(f"{ASKED}{provider.key}:company:{company.id}", "1")
+        await state.set_setting(f"{ASKED}{provider.key}:company_size:{company.id}", "1")
+        facts = await _safe(provider.company, client, provider.api_key(env), state, company)
+        if facts is None:
+            continue
+        if need_site and facts.place and facts.place.known:
+            await state.add_observation(
+                "COMPANY_SITE", company_id=company.id, collector=provider.key,
+                value_text=places_value([facts.place]), value_num=1,
+                confidence=CONFIDENCE[provider.key])
+            site_found = True
+        if need_size and facts.employees and await record_size(
+                state, company.id, facts.employees, provider.key):
+            sized = True
+    return asked
+
+
+async def enrich_companies(state, config, env, companies: list, limit: int,
+                           client: httpx.AsyncClient | None = None) -> dict:
+    """Headcount (and location) lookups for companies, at most ``limit``
+    companies asked. For sizing up companies before they're drafted
+    (``sellbird segments --sizes``)."""
+    from sellbird.segments import company_size
+    from sellbird.signals import seed_signal_catalog
+
+    providers = active_providers(config, env)
+    done = {"looked_up": 0, "sized": 0, "skipped_known": 0}
+    if not providers or limit <= 0:
+        return done
+    await seed_signal_catalog(state)
+    owned = client is None
+    client = client or httpx.AsyncClient(timeout=TIMEOUT)
+    try:
+        for company in companies:
+            if done["looked_up"] >= limit:
+                break
+            if await company_size(state, company.id, company) is not None:
+                done["skipped_known"] += 1
+                continue
+            if await _look_up_company(state, providers, env, client, company, want_site=False):
+                done["looked_up"] += 1
+                if await company_size(state, company.id, company) is not None:
+                    done["sized"] += 1
+    finally:
+        if owned:
+            await client.aclose()
+    return done
+
+
+async def _safe(call, *args):
     """A provider call that never raises: a provider that's down or returns
     something unexpected is a miss, not a stopped Writer."""
     try:

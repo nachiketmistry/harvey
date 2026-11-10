@@ -46,6 +46,38 @@ enrichment:
 
 **Competitors, customers and partners.** Every company is a prospect until you say otherwise, on its page in the Companies tab (Relationship) or with `sellbird companies --mark DOMAIN competitor --note "why"` (also `customer`, `partner`, or `prospect` to undo). Only prospects get cold email: the Writer skips the rest and anything already queued for them is cancelled on the next cycle. Competitors stay in the register as companies to watch, and the Companies list can show them on their own. One check (`sellbird/eligibility.py`) decides who may get cold email, for the Writer and the Sender alike: relationship first, then geography.
 
+**Segments.** One ICP usually holds several kinds of buyer: an in-house team buys the product, a small consultancy might partner on it, a global integrator only signs once its clients ask. List them under `icp.segments`, in the order you want them drafted. Each has a `key`, a `name`, a plain-words `description` (Sellbird reads it to propose each company's segment), optional `min_employees` / `max_employees`, the `titles` to write to there (empty: `icp.titles`), a `playbook` (a skill name, `skills/<playbook>.md`, holding the offer, angle and call to action for that segment), and a `status`: `active` (pursue now), `later` (parked) or `never`.
+
+```yaml
+icp:
+  segments:
+  - key: in_house
+    name: In-house team
+    description: A company that runs the product itself and doesn't sell services around it.
+    max_employees: 2000
+    titles: [Platform Engineer, SRE Manager]
+    playbook: playbook_in_house
+  - key: partner
+    name: Boutique partner
+    description: A small, owner-led consultancy that implements it for clients.
+    max_employees: 200
+    titles: [Founder, Practice Lead]
+    playbook: playbook_partner
+  - key: integrator
+    name: Large integrator
+    description: A large multi-practice integrator or reseller.
+    status: later
+```
+
+Which segment a company is in is a `COMPANY_SEGMENT` observation. Sellbird proposes one from what it holds about the company (one model call per 15 companies, before drafting or with `sellbird segments --classify`); you confirm or change it with `sellbird segments --confirm DOMAIN` / `--set DOMAIN KEY`, or on the company's card in the dashboard, and yours always wins. Headcount is an `EMPLOYEE_COUNT` observation from Hunter or People Data Labs (`sellbird segments --sizes N`, and every enrichment lookup), else the company size you imported. What follows from it:
+
+- A company in a `later` or `never` segment gets no cold email, and one clearly outside its segment's size bounds (10,001+ in a segment capped at 2,000) is held. Anything already queued for them is cancelled on the next cycle. A range that straddles a bound (1,001-5,000) is flagged in the preview, not held.
+- The Writer drafts your segments in order, then by geography, and ranks people by the segment's `titles`.
+- Each email follows its segment's playbook, so a partner never gets the offer meant for a buyer. Sequences are grouped by segment.
+- `sellbird write --preview` shows each person's segment and headcount, the next batch's mix by segment, and warnings (no segment yet, a size near a bound, a segment without a playbook). `sellbird segments` lists every segment with its counts and the proposals waiting for you.
+
+Without `icp.segments`, nothing changes: one undivided ICP, as before.
+
 **Competitor profiles.** A competitor is its own record on the **Competitors** tab (or `sellbird competitors`): a name, an optional domain, the other names prospects use for it, and a battlecard you write. It can be a company Sellbird found (marking one creates its profile), a vendor it never will, or a product such as a built-in tool. A company whose domain is on the list is never cold-emailed, even one Sellbird finds later. Every reply is matched against each competitor's name, domain and aliases (whole words, any case, 3 letters or more, in Sellbird with no model call). A match is recorded as a `COMPETITOR_MENTIONED` observation on the person and their company, with the words they used, and that competitor's battlecard goes into the prompt for the answer. The profile shows who named it and when. To start from the battle cards `sellbird train` wrote, use **Import from training** on the tab or `sellbird competitors --import-battlecards`: each `## vs. NAME` section becomes a competitor, with the names in its heading (`A / B`, `(e.g., C, D)`) as aliases.
 
 ```bash

@@ -383,6 +383,37 @@ SIGNAL_CATALOG: list[dict] = [
     },
 
     {
+        "code": "EMPLOYEE_COUNT",
+        "label": "Headcount",
+        "description": (
+            "How many people the company employs, as a range, from an enrichment "
+            "provider (Hunter, People Data Labs), your CRM or you. Checked against "
+            "your segments' size bounds: a company clearly outside its segment is "
+            "held, not written to."
+        ),
+        "category": "profile",
+        "value_type": "text",
+        "collector": "enrichment",
+        "cost_note": "1 enrichment lookup (free tiers available)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "COMPANY_SEGMENT",
+        "label": "Segment",
+        "description": (
+            "Which of your icp.segments the company is (an in-house team, a partner, "
+            "a large integrator): proposed by Sellbird from what it holds about the "
+            "company, confirmed or changed by you. Decides the playbook the Writer "
+            "uses, the drafting order, and whether the company is pursued now."
+        ),
+        "category": "profile",
+        "value_type": "text",
+        "collector": "segments",
+        "cost_note": "free (one model call per 15 companies)",
+        "confidence_floor": 0.0,
+    },
+
+    {
         "code": "PERSON_LOCATION",
         "label": "Where the person works",
         "description": (

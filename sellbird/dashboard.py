@@ -640,14 +640,48 @@ async def get_company_profile(company_id: str):
         "WHERE o.company_id = ? AND o.prospect_id = '' ORDER BY o.observed_at DESC LIMIT 200",
         (company_id,),
     )
-    register = {}
+    register, segments = {}, []
     try:
         from sellbird.config import load_config
         from sellbird.register import build_register
-        register = next(iter(await build_register(query_db, load_config(), company_id)), {})
+        from sellbird.segments import configured
+        config = load_config()
+        register = next(iter(await build_register(query_db, config, company_id)), {})
+        segments = [{"key": s.key, "name": s.name, "status": s.status} for s in configured(config)]
     except Exception as e:
         logger.warning(f"Company profile register unavailable: {e}")
-    return {"company": rows[0], "register": register, "observations": observations}
+    return {"company": rows[0], "register": register, "observations": observations,
+            "segments": segments}
+
+
+@app.post("/api/companies/{company_id}/segment")
+async def set_company_segment(company_id: str, request: Request):
+    """Which of your segments a company is (sellbird.segments). Yours wins
+    over Sellbird's proposal; a segment set to later or never stops cold
+    email, and queued email is cancelled on the next cycle."""
+    from sellbird.config import load_config
+    from sellbird.segments import set_segment
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    key = str(body.get("segment") or "").strip().lower()
+    note = str(body.get("note") or "").strip()[:500]
+    try:
+        state = _state()
+        await state.init_db()
+        if not await state.get_company(company_id):
+            return JSONResponse({"success": False, "message": "No such company."}, status_code=404)
+        try:
+            await set_segment(state, company_id, key, load_config(), note)
+        except ValueError as e:
+            return JSONResponse({"success": False, "message": str(e)}, status_code=400)
+        await state.log_action("company_segment", "dashboard", {
+            "company_id": company_id, "segment": key, "note": note})
+        return {"success": True}
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)}, status_code=500)
 
 
 @app.post("/api/companies/{company_id}/relationship")

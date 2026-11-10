@@ -2174,7 +2174,9 @@ function companyInfoCard(company, profile) {
   ).join('<br>');
   const people = by('DECISION_MAKER_TITLE').length ? by('DECISION_MAKER_TITLE') : by('CONTACT_FOUND');
   const form = by('CONTACT_FORM_URL')[0];
-  const shown = new Set(['DECISION_MAKER_TITLE', 'CONTACT_FOUND', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'FOUND_IN_SERP', 'TECH_STACK']);
+  const shown = new Set(['DECISION_MAKER_TITLE', 'CONTACT_FOUND', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'FOUND_IN_SERP', 'TECH_STACK',
+    'COMPANY_SEGMENT', 'EMPLOYEE_COUNT']);
+  const segments = (profile && profile.segments) || [];
   const other = Object.values(latest).filter(o => !shown.has(o.signal_code));
   let html = '<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>' + escHtml(c.name || c.domain) + '</h3>' +
     '<span class="meta">' + (typeof company.fit === 'number' ? 'Fit ' + company.fit + ' / 100' : '') + '</span></div>' +
@@ -2182,6 +2184,8 @@ function companyInfoCard(company, profile) {
     row('Website', link(website, c.domain || website)) +
     row('Sector', escHtml(c.industry)) +
     row('Area', escHtml(c.location)) +
+    row('Employees', escHtml(reg.employees || '')) +
+    (segments.length ? row('Segment', segmentControl(c.id, segments, reg)) : '') +
     row('Relationship', relationshipControl(c.id, reg.relationship || company.relationship || 'prospect',
       reg.relationship_note || '')) +
     row('Why selected', escHtml(reg.why_selected || (company.fit_reasons || []).join(' · '))) +
@@ -2211,6 +2215,43 @@ function relationshipControl(id, current, note) {
     '<button class="btn btn-secondary" onclick="saveRelationship(' + jsq(id) + ')">Save</button>' +
     '</div><div class="muted relationship-help">Only prospects get cold email. ' +
     'Competitors, customers and partners never do, and anything already queued for them is cancelled.</div>';
+}
+
+// Which of your segments it is (icp.segments). Sellbird proposes one; what
+// you pick here wins, and decides the playbook, the order and whether it's
+// pursued now.
+function segmentControl(id, segments, reg) {
+  const current = reg.segment_key || '';
+  const status = {later: ' (later)', never: ' (never)'};
+  const options = (current ? '' : '<option value="" selected disabled>Pick a segment</option>') +
+    segments.map(s => '<option value="' + escHtml(s.key) + '"' + (s.key === current ? ' selected' : '') + '>' +
+      escHtml(s.name) + (status[s.status] || '') + '</option>').join('') +
+    '<option value="unknown"' + (current === 'unknown' ? ' selected' : '') + '>Not sure</option>';
+  const said = current
+    ? (reg.segment_confirmed ? 'Set by you.' : 'Proposed by Sellbird: confirm it with Save, or pick another.') +
+      (reg.segment_reason ? ' ' + escHtml(reg.segment_reason) : '')
+    : 'No segment yet. Sellbird proposes one before drafting, or pick it here.';
+  return '<div class="relationship">' +
+    '<select class="form-input" id="seg-' + escHtml(id) + '" aria-label="Segment">' + options + '</select>' +
+    '<input class="form-input" id="seg-note-' + escHtml(id) + '" placeholder="Why (optional)" maxlength="500">' +
+    '<button class="btn btn-secondary" onclick="saveSegment(' + jsq(id) + ')">Save</button>' +
+    '</div><div class="muted relationship-help">' + said + '</div>';
+}
+
+async function saveSegment(id) {
+  const segment = document.getElementById('seg-' + id).value;
+  if (!segment) { showToast('Pick a segment first.', 'error'); return; }
+  const note = document.getElementById('seg-note-' + id).value.trim();
+  const data = await api('/api/companies/' + encodeURIComponent(id) + '/segment', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({segment: segment, note: note}),
+  });
+  if (!data || !data.success) { showToast(failMsg(data, 'Could not save.'), 'error'); return; }
+  showToast('Segment saved.', 'success');
+  const list = await api('/api/companies');
+  if (list) _companies = list;
+  const j = _companies.findIndex(c => c.id === id);
+  if (j >= 0) showCompanyContacts(j); else loadCompanies();
 }
 
 async function saveRelationship(id) {

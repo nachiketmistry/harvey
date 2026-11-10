@@ -25,6 +25,13 @@ from sellbird.integrations.mail_provider import NATIVE_PROVIDERS
 from sellbird.models.campaign import Campaign, EmailStep
 from sellbird.state import StateManager, writable_statuses
 from sellbird.sending_mode import sync_sending_mode
+from sellbird.segments import by_key as segment_by_key
+from sellbird.segments import classify as classify_segments
+from sellbird.segments import company_segment
+from sellbird.segments import configured as configured_segments
+from sellbird.segments import playbook_block as segment_playbook
+from sellbird.segments import priority as segment_priority
+from sellbird.segments import prompt_facts as segment_facts
 from sellbird.startups import startup_facts
 from sellbird.untrusted import UNTRUSTED_RULE, fence
 
@@ -109,13 +116,15 @@ def footer_rule(config, rules: str) -> str:
 EMAIL_ORDER = {"verified": 0, "risky": 1}
 
 
-def persona(prospect, config) -> int:
+def persona(prospect, config, segment=None) -> int:
     """How well a person's title fits who you sell to: 2 when it matches
-    icp.titles (owners and founders match an owner-type target), 1 for
-    another named person, 0 for a general inbox."""
+    the titles for their company's segment (else icp.titles; owners and
+    founders match an owner-type target), 1 for another named person, 0
+    for a general inbox."""
     if getattr(prospect, "is_company_inbox", False) or not (getattr(prospect, "first_name", "") or "").strip():
         return 0
-    titles = getattr(getattr(config, "icp", None), "titles", None) or []
+    titles = (getattr(segment, "titles", None) or
+              getattr(getattr(config, "icp", None), "titles", None) or [])
     return 2 if titles and title_matches(getattr(prospect, "title", "") or "", titles) else 1
 
 
@@ -163,7 +172,12 @@ class Writer:
         # (sellbird.enrichment, opt-in), then check and rank them again:
         # someone found to work out of territory drops out, someone local
         # moves up.
-        if await self._enrich(prospects_with_email):
+        # And which of your segments their companies are (sellbird.segments):
+        # a parked or out-of-bounds company drops out, and the order follows
+        # your segments.
+        enriched = await self._enrich(prospects_with_email)
+        classified = await self._classify(prospects_with_email)
+        if enriched or classified:
             prospects_with_email = await self._prioritise(
                 await self._eligible(prospects_with_email))
             if not prospects_with_email:
@@ -182,7 +196,8 @@ class Writer:
             prospects_with_email = await self._batch(prospects_with_email, room)
 
         # Batch prospects into campaign groups (by industry/title for relevance)
-        batches = self._group_prospects(prospects_with_email)
+        batches = self._group_prospects(prospects_with_email,
+                                        await self._segment_keys(prospects_with_email))
 
         for batch_name, prospects in batches.items():
             if not prospects:
@@ -345,6 +360,17 @@ class Writer:
         a raise it announced; see sellbird.startups), else None."""
         return await startup_facts(getattr(self, "state", None), company_id)
 
+    async def _segment_facts(self, company_id) -> tuple[list[str], object]:
+        """(fact lines, segment) for a company: its segment and headcount.
+        Never stops writing."""
+        if not company_id or getattr(self, "state", None) is None:
+            return [], None
+        try:
+            return await segment_facts(self.state, company_id, self.config)
+        except Exception as e:
+            logger.debug(f"Writer: segment facts unavailable: {e}")
+            return [], None
+
     def _startup_playbook(self) -> str:
         """skills/selling_to_startups.md, for startup prospects ("" if absent)."""
         text = self.brain.load_skill("selling_to_startups") if hasattr(self.brain, "load_skill") else ""
@@ -411,6 +437,8 @@ class Writer:
         startup = await self._startup(prospect.company_id)
         if startup is not None:
             facts.extend(startup)
+        seg_facts, segment = await self._segment_facts(prospect.company_id)
+        facts.extend(seg_facts)
 
         prompt = self.brain.load_prompt(
             "writer",
@@ -427,6 +455,7 @@ class Writer:
             prompt += "\n\n" + self.skills
         if startup is not None:
             prompt += self._startup_playbook()
+        prompt += segment_playbook(self.brain, segment)
         prompt += await self._feedback_block([prospect.id])
         prompt += await self._edits_block()
         rules = getattr(self, "email_rules", "")
@@ -523,6 +552,11 @@ Pricing: {self.config.product.pricing}"""
         backed = [await self._startup(p.company_id) for p in prospects]
         if prospects and all(b is not None for b in backed):
             prompt += self._startup_playbook()
+        # The segment's playbook when the whole batch shares one (batches
+        # are grouped by segment).
+        segs = [(await self._segment_facts(p.company_id))[1] for p in prospects]
+        if segs and segs[0] is not None and all(sg is segs[0] for sg in segs):
+            prompt += segment_playbook(self.brain, segs[0])
         # Campaign notes only: this template goes to the whole batch, so a
         # note about one person ("met her at the expo") must never reach it.
         prompt += await self._feedback_block([])
@@ -790,7 +824,9 @@ Return ONLY a JSON array (no markdown fences, no commentary):
 
     async def _prioritise(self, prospects: list) -> list:
         """The drafting order, as lead scoring does it (fit plus persona):
-        geography tier first (your icp.geography order), then whether their
+        your segment order first (icp.segments; a company with no segment
+        yet after every segment), then geography tier (your icp.geography
+        order), then whether their
         title is one you target (icp.titles), how sure Sellbird is of where
         they are, the company's fit (sellbird.fit), seniority (an owner or
         founder before a VP, so the batch's one person per company is the
@@ -798,6 +834,7 @@ Return ONLY a JSON array (no markdown fences, no commentary):
         prospect's own score."""
         entries = len(getattr(getattr(self.config, "icp", None), "geography", None) or [])
         fits = await self._company_fits()
+        segs = await self._segment_keys(prospects)
         keys = {}
         for p in prospects:
             try:
@@ -805,7 +842,9 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             except Exception as e:
                 logger.debug(f"Writer: geography rank failed for {p.id}: {e}")
                 tier, certainty = entries, CERTAINTY[UNKNOWN]
-            keys[p.id] = (tier, -persona(p, self.config), certainty,
+            keys[p.id] = (segment_priority(self.config, segs.get(p.company_id or "", "")),
+                          tier, -persona(p, self.config, segment_by_key(
+                              self.config, segs.get(p.company_id or "", ""))), certainty,
                           -fits.get(p.company_id or "", 0),
                           -owner_rank(getattr(p, "title", "") or ""),
                           EMAIL_ORDER.get(getattr(p, "email_status", "") or "", len(EMAIL_ORDER)),
@@ -829,6 +868,45 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             picked.append(p)
         return picked
 
+    async def _segment_keys(self, prospects: list) -> dict[str, str]:
+        """{company_id: segment key} for these prospects' companies that have
+        one (sellbird.segments). Empty when no segments are configured."""
+        if not configured_segments(self.config):
+            return {}
+        out = {}
+        for cid in {p.company_id for p in prospects if getattr(p, "company_id", "")}:
+            try:
+                found = await company_segment(self.state, cid, self.config)
+            except Exception as e:
+                logger.debug(f"Writer: segment unavailable for {cid}: {e}")
+                found = None
+            if found is not None:
+                out[cid] = found.key
+        return out
+
+    async def _classify(self, prospects: list) -> bool:
+        """Propose a segment for the queue's companies that have none. True
+        when any was proposed. Never stops writing."""
+        if not configured_segments(self.config) or self.brain is None:
+            return False
+        seen, companies = set(), []
+        for p in prospects:
+            cid = getattr(p, "company_id", "") or ""
+            if cid and cid not in seen:
+                seen.add(cid)
+                company = await self.state.get_company(cid)
+                if company is not None:
+                    companies.append(company)
+        try:
+            done = await classify_segments(self.state, self.brain, self.config, companies)
+        except Exception as e:
+            logger.warning(f"Writer: segment proposals failed: {e}")
+            return False
+        if done["proposed"] or done["unknown"]:
+            logger.info(f"Writer: proposed segments ({done['proposed']} placed, {done['unknown']} "
+                        "unclear). Check them with `sellbird segments`.")
+        return bool(done["proposed"] or done["unknown"])
+
     async def _company_fits(self) -> dict[str, int]:
         """Each company's fit, 0-100 (sellbird.fit, via the register). An
         empty map when it can't be read: the order then rests on the rest."""
@@ -840,13 +918,15 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             logger.debug(f"Writer: company fit unavailable: {e}")
             return {}
 
-    def _group_prospects(self, prospects: list) -> dict[str, list]:
-        """Group prospects into campaign batches by industry/title combo."""
+    def _group_prospects(self, prospects: list, segments: dict | None = None) -> dict[str, list]:
+        """Group prospects into campaign batches: by segment when their
+        company has one (one template, one playbook), else by industry."""
         batches: dict[str, list] = {}
+        segments = segments or {}
 
         for prospect in prospects:
-            # Group by industry + rough title category
-            industry = prospect.industry or "general"
+            # Group by segment, or industry when there is none
+            industry = segments.get(prospect.company_id or "") or prospect.industry or "general"
             # Inbox prospects get their own campaign: their templates can't
             # greet anyone by name.
             kind = "inbox-outreach" if prospect.is_company_inbox else "outreach"

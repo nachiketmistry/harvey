@@ -119,17 +119,60 @@ def test_no_allowance_left_means_no_request(state, monkeypatch):
     assert calls == [] and done["looked_up"] == 0
 
 
+async def _sized(state, prospect, text="11-50"):
+    from sellbird.segments import record_size
+    from sellbird.signals import seed_signal_catalog
+    await seed_signal_catalog(state)
+    await record_size(state, prospect.company_id, text, "you")
+
+
 def test_people_already_placed_are_skipped_and_the_limit_holds(state):
     a = asyncio.run(_person(state, "a@one.example"))
     b = asyncio.run(_person(state, "b@two.example"))
     c = asyncio.run(_person(state, "c@three.example"))
-    from sellbird.signals import seed_signal_catalog
-    asyncio.run(seed_signal_catalog(state))
+    asyncio.run(_sized(state, a))
     asyncio.run(state.add_observation("PERSON_LOCATION", prospect_id=a.id, collector="you",
                                       value_text=Place("Seattle", "US-WA", "US").to_json()))
     done, calls = run(state, {}, [a, b, c], cfg(providers=("hunter",)), limit=1)
     assert done == {"looked_up": 1, "placed": 0, "skipped_known": 1}
     assert {c[2].get("email") for c in calls if c[1] == "/v2/people/find"} == {"b@two.example"}
+
+
+def test_a_placed_persons_company_is_still_sized(state):
+    a = asyncio.run(_person(state, "a@one.example"))
+    asyncio.run(_sized(state, a, ""))  # seeds the catalog; no size stored
+    asyncio.run(state.add_observation("PERSON_LOCATION", prospect_id=a.id, collector="you",
+                                      value_text=Place("Seattle", "US-WA", "US").to_json()))
+    body = {"data": {"geo": {"city": "Chicago"}, "metrics": {"employeesRange": "1K-5K"}}}
+    done, calls = run(state, {"/v2/companies/find": (200, body)}, [a], cfg(providers=("hunter",)))
+    assert [c[1] for c in calls] == ["/v2/companies/find"]   # no person lookup
+    from sellbird.segments import company_size
+    assert asyncio.run(company_size(state, a.company_id)).label() == "1,000-5,000"
+    # Where the company is wasn't wanted (the person is placed): not stored.
+    assert asyncio.run(state.get_observations(company_id=a.company_id, signal_code="COMPANY_SITE")) == []
+
+
+def test_pdl_company_headcount_is_recorded_and_not_asked_twice(state):
+    p = asyncio.run(_person(state))
+    body = {"status": 200, "employee_count": 240, "size": "201-500",
+            "location": {"locality": "chicago", "region": "illinois", "country": "united states"}}
+    routes = {"/v5/company/enrich": (200, body)}
+    run(state, routes, [p], cfg(providers=("pdl",)))
+    from sellbird.segments import company_size
+    assert asyncio.run(company_size(state, p.company_id)).label() == "240"
+    _, calls = run(state, routes, [p], cfg(providers=("pdl",)))
+    assert [c for c in calls if c[1] == "/v5/company/enrich"] == []
+
+
+def test_a_company_located_before_headcount_was_read_is_asked_once_more(state):
+    p = asyncio.run(_person(state))
+    asyncio.run(state.set_setting(f"enriched:hunter:company:{p.company_id}", "1"))
+    asyncio.run(state.set_setting(f"enriched:hunter:person:{p.id}", "1"))
+    body = {"data": {"geo": {"city": "Chicago"}, "metrics": {"employees": 30}}}
+    _, calls = run(state, {"/v2/companies/find": (200, body)}, [p], cfg(providers=("hunter",)))
+    assert [c[1] for c in calls] == ["/v2/companies/find"]
+    sites = asyncio.run(state.get_observations(company_id=p.company_id, signal_code="COMPANY_SITE"))
+    assert sites == []   # its location was already asked for
 
 
 def test_off_or_without_a_key_nothing_runs(state):

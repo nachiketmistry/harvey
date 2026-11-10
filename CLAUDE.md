@@ -180,7 +180,7 @@ Ask the user these questions and build `sellbird.yaml` and `skills/product_knowl
 
 ### Step 4: Confirm Signals
 
-Sellbird ships a catalog of 33 signals it knows how to collect, all **proposed** and
+Sellbird ships a catalog of 35 signals it knows how to collect, all **proposed** and
 none active. Nothing is prospected against until the user confirms them.
 
 Send them to `sellbird dashboard` → **Signals**, where each one shows a
@@ -296,6 +296,7 @@ Users will come back with questions and tasks. Common ones:
 - **"The emails aren't good"** → Edit `skills/email_frameworks.md` and `prompts/writer.md`. Show them the current rules and help them adjust. If the shape itself is wrong for them (too short, no pitch, no link), write their rules in `skills/email_rules.md` and set `writer.email_rules: "skills/email_rules.md"`: it replaces the built-in shape (docs/skills-and-agents.md, "Your own email shape").
 - **"Why is a competitor / customer on my list?"** → Mark it: Companies tab → the company → Relationship, or `sellbird companies --mark DOMAIN competitor`. Only prospects get cold email; queued email to the rest is cancelled next cycle, and the Companies list can show competitors on their own. Each competitor also gets a profile on the **Competitors** tab (`sellbird competitors`): aliases and a battlecard. When a reply names one, Sellbird records it and answers with that battlecard.
 - **"Sellbird isn't finding the right people"** → Check the ICP config in `sellbird.yaml`. Adjust industries, titles, company_size, geography.
+- **"The list mixes buyers, partners and giants"** → Use segments (`icp.segments`, docs/configuration.md "Segments"): each kind of company gets its own size bounds, titles, playbook and status (active, later, never). Run `sellbird segments` to review Sellbird's proposal for each company and confirm or change it. Before drafting a batch, look at the segment mix in `sellbird write --preview` with the user, and raise anything that doesn't fit their ICP or offer before it's drafted, not after.
 - **"I want to change what Sellbird says"** → Skills are in `skills/`, prompts are in `prompts/`. Both are plain markdown files. Edit them directly.
 - **"Train Sellbird on a different product"** → `sellbird train <new-url>`
 - **"How do I see the database?"** → It's at `data/sellbird.db`. They can open it with any SQLite tool, or ask you to query it.
@@ -346,6 +347,7 @@ sellbird gmail auth            # One-time Gmail OAuth (when provider: gmail)
 sellbird gmail test            # Verify the Gmail connection
 sellbird write --preview       # The outreach queue, best first, and who the next review batch is; `sellbird write` drafts it (nothing sent)
 sellbird competitors           # Competitor profiles; --add NAME --domain D / --aliases-for / --battlecard-for / --import-battlecards
+sellbird segments              # Which of your icp.segments each company is; --classify / --confirm DOMAIN / --set DOMAIN KEY / --sizes N
 sellbird contacts --locate EMAIL "City, ST"   # Where a contact works (geography places people by it); --import-locations crm.csv
 sellbird companies --locate DOMAIN "City, Country"   # Where a company is; --import-locations companies.csv
 sellbird enrich --estimate     # Enrichment allowances (Hunter, PDL); --limit N looks up your next N prospects

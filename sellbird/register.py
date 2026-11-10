@@ -16,11 +16,14 @@ from sellbird.fit import company_fit, current_roles
 from sellbird.gate import do_not_contact_match
 from sellbird.eligibility import PROSPECT, RELATIONSHIP_LABELS
 from sellbird.geography import company_place
+from sellbird.segments import (
+    EMPLOYEES, SEGMENT, assignment_from_rows, hold, size_from_rows,
+)
 
 COLUMNS = [
     "company", "website", "sector", "area", "fit", "why_selected",
     "status", "why_not_contacted", "contacts", "contact_form", "hiring",
-    "found_via", "first_found",
+    "found_via", "first_found", "segment", "employees",
 ]
 LIVE = {"new", "queued"}
 DONE = {"contacted", "replied", "meeting", "closed"}
@@ -68,6 +71,17 @@ def company_status(company: dict, prospects: list[dict], outbox: list[dict],
 
     states = {o.get("status") for o in outbox}
     sent = "sent" in states or any(p.get("status") in DONE for p in prospects)
+    if not sent and config is not None:
+        # Your segment for it (sellbird.segments): parked, never, or clearly
+        # outside the segment's size.
+        kind, detail = hold(assignment_from_rows(observations, config),
+                            size_from_rows(observations, company.get("company_size") or ""), config)
+        if kind == "never":
+            return "Not a fit", f"Your segment for it ({detail}) is set to never"
+        if kind == "later":
+            return "Parked", f"Its segment ({detail}) is set to later"
+        if kind == "size":
+            return "Excluded", f"Outside its segment's size: {detail}"
     if not sent and config is not None and company_place(company, observations, config, places).outside:
         return "Excluded", "Outside your geography (icp.geography)"
     if "sent" in states or any(p.get("status") in DONE for p in prospects):
@@ -128,9 +142,10 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
         "SELECT p.company_id, o.status, o.send_at FROM outbox o JOIN prospects p ON p.id = o.prospect_id "
         "WHERE 1=1" + one.format(col="p.company_id"), args)
     observations = await query_db(
-        "SELECT company_id, signal_code, value_text, value_num, observed_at, collector FROM observations "
-        "WHERE signal_code IN "
-        "('DECISION_MAKER_TITLE', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'SITE_MENTIONS', 'COMPANY_SITE')"
+        "SELECT company_id, signal_code, value_text, value_num, observed_at, collector, confidence "
+        "FROM observations WHERE signal_code IN "
+        "('DECISION_MAKER_TITLE', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'SITE_MENTIONS', 'COMPANY_SITE', "
+        f"'{SEGMENT}', '{EMPLOYEES}')"
         + one.format(col="company_id"), args)
     # Resolved free-text locations (sellbird.locations): read once, so
     # placing a company here never looks anything up.
@@ -163,13 +178,17 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
     for c in companies:
         cid = c["id"]
         ps, obs = by_p.get(cid, []), by_obs.get(cid, [])
-        fit, reasons = company_fit(c, ps, obs, config, dnc, places)
+        assignment = assignment_from_rows(obs, config)
+        seg = assignment.segment(config) if assignment else None
+        fit, reasons = company_fit(c, ps, obs, config, dnc, places,
+                                   titles=getattr(seg, "titles", None) or None)
         rel = relationships.get(cid) or (
             {"relationship": "competitor", "note": "On your competitor list"}
             if (c.get("domain") or "").lower() in listed and c.get("domain") else {})
         status, why = company_status(c, ps, by_o.get(cid, []), obs, dnc, send_to_risky,
                                      config=config, relationship=rel, places=places)
         sector, area = c.get("industry") or "", c.get("location") or ""
+        size = size_from_rows(obs, c.get("company_size") or "")
         found = f"Found via {c['source']}" if c.get("source") else ""
         rows.append({
             # id and fit_reasons are for the dashboard; the CSV leaves them out.
@@ -180,6 +199,11 @@ async def build_register(query_db, config, company_id: str | None = None) -> lis
             "company": c.get("name") or c.get("domain") or "",
             "website": c.get("website") or (f"https://{c['domain']}" if c.get("domain") else ""),
             "sector": sector,
+            "segment": assignment.label(config) if assignment else "",
+            "segment_key": assignment.key if assignment else "",
+            "segment_confirmed": bool(assignment and assignment.confirmed),
+            "segment_reason": assignment.reason if assignment else "",
+            "employees": size.label() if size else "",
             "area": area,
             "fit": fit,
             "why_selected": "; ".join(x for x in (found, " · ".join(reasons)) if x),

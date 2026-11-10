@@ -592,6 +592,7 @@ def cmd_write(args):
     from sellbird.agents.writer import Writer, persona
     from sellbird.config import load_config, load_env
     from sellbird.geography import prospect_place
+    from sellbird.segments import company_segment, company_size, configured, size_doubt
     from sellbird.state import StateManager
 
     async def _write():
@@ -611,20 +612,50 @@ def cmd_write(args):
         drafting = {p.id for p in (await writer._batch(queue, take) if room is not None else queue)}
         fits = await writer._company_fits()
         persona_label = {2: "target title", 1: "other title", 0: "general inbox"}
+        segs = configured(config)
+        active = [sg.name for sg in segs if sg.status == "active"]
+        order = (f"segment: {' > '.join(active)}, then " if active else "") + \
+            f"geography: {' > '.join(config.icp.geography or ['anywhere'])}, then fit score"
         print(f"\n  Outreach queue: {len(queue)} contact(s) Sellbird may write to, best first"
-              f" (geography: {' > '.join(config.icp.geography or ['anywhere'])}, then fit score).\n")
+              f" ({order}).\n")
+        batch_mix: dict[str, int] = {}
+        warnings: list[str] = []
         for i, p in enumerate(queue[:args.show], 1):
             place = await prospect_place(state, p, config)
             mark = "draft" if p.id in drafting else ""
             who = " ".join(x for x in (p.first_name, p.last_name) if x) or "General inbox"
             print(f"  {i:>3}. {mark:<6}{who[:24]:<25}{(p.title or '')[:34]:<35}{(p.company or '')[:26]}")
-            print(f"  {'':<11}{place.reason()} · {persona_label[persona(p, config)]}"
+            seg_note, seg = "", None
+            if segs:
+                a = await company_segment(state, p.company_id or "", config)
+                size = await company_size(state, p.company_id or "")
+                label = a.label(config) if a else "no segment yet"
+                seg = a.segment(config) if a else None
+                seg_note = f"{label} · {size.label() + ' employees' if size else 'size unknown'} · "
+                if p.id in drafting:
+                    batch_mix[label] = batch_mix.get(label, 0) + 1
+                    doubt = size_doubt(seg, size) if seg else ""
+                    if a is None or a.key == "unknown":
+                        warnings.append(f"{p.company}: no segment yet, so no segment playbook")
+                    if doubt:
+                        warnings.append(f"{p.company}: {doubt}")
+                    if seg is not None and not seg.playbook:
+                        warnings.append(f"{p.company}: segment {seg.name} has no playbook")
+            print(f"  {'':<11}{seg_note}{place.reason()} · {persona_label[persona(p, config, seg)]}"
                   f" · company fit {fits.get(p.company_id or '', 0)} · {p.email_status} email")
         if room is not None and len(drafting) < min(take, len(queue)):
             print("\n  (One person per company in a batch: a reply from anyone there stops everyone's"
                   "\n  sequence, so colleagues wait for a later batch.)")
         if len(queue) > args.show:
             print(f"\n  ...and {len(queue) - args.show} more (--show N to see them).")
+        if batch_mix:
+            print("\n  The next batch by segment: " + ", ".join(
+                f"{n} {label}" for label, n in sorted(batch_mix.items(), key=lambda kv: -kv[1])))
+            for w in dict.fromkeys(warnings):
+                print(f"    ! {w}")
+            if any("proposed" in label or label == "no segment yet" for label in batch_mix):
+                print("    Check proposals with `sellbird segments` before drafting; drafting proposes"
+                      "\n    a segment for any company that has none.")
         if skipped:
             print("\n  Left out:")
             for why, n in sorted(skipped.items(), key=lambda kv: -kv[1]):
@@ -650,6 +681,157 @@ def cmd_write(args):
               "\n  is sent until you approve it.\n")
 
     asyncio.run(_write())
+
+
+def cmd_segments(args):
+    """Your segments (icp.segments): which kind of company each one is,
+    proposed by Sellbird and confirmed by you, and their headcount."""
+    import re as _re
+
+    from sellbird.config import load_config, load_env
+    from sellbird.segments import (
+        CLASSIFIER, UNKNOWN, by_key, classify, company_segment, company_size, configured,
+        set_segment, size_conflict, size_doubt,
+    )
+    from sellbird.state import StateManager
+
+    async def _segments():
+        state = StateManager()
+        await state.init_db()
+        config, env = load_config(), load_env()
+        segs = configured(config)
+        if not segs:
+            print("\n  No segments yet. Add icp.segments to your config: each kind of company you"
+                  "\n  sell to, its size bounds, its playbook and whether to pursue it now. See"
+                  "\n  docs/configuration.md, \"Segments\".\n")
+            return
+
+        async def company_for(domain: str):
+            domain = _re.sub(r"^https?://", "", domain.strip().lower()).split("/")[0].removeprefix("www.")
+            company = await state.get_company_by_domain(domain)
+            if company is None:
+                print(f"\n  No company with the domain {domain}.\n")
+            return company
+
+        if args.set:
+            company = await company_for(args.set[0])
+            if company is None:
+                return
+            try:
+                await set_segment(state, company.id, args.set[1], config, args.note)
+            except ValueError as e:
+                print(f"\n  {e}\n")
+                return
+            seg = by_key(config, args.set[1].strip().lower())
+            print(f"\n  {company.name or company.domain}: {seg.name if seg else 'Unknown'} (set by you).\n")
+            return
+        if args.confirm:
+            done = 0
+            for domain in args.confirm:
+                company = await company_for(domain)
+                current = await company_segment(state, company.id, config) if company else None
+                if current is None:
+                    continue
+                await set_segment(state, company.id, current.key, config, current.reason)
+                done += 1
+            print(f"\n  Confirmed {done} segment(s).\n")
+            return
+
+        # Companies with someone Sellbird could write to or has drafts for:
+        # new or queued, with a deliverable email.
+        ids = []
+        for status in ("queued", "new"):
+            for p in await state.get_prospects_by_status(status):
+                if p.email and p.company_id and p.company_id not in ids \
+                        and (p.email_status or "") in ("verified", "risky"):
+                    ids.append(p.company_id)
+
+        def companies_n(n: int) -> str:
+            return f"{n} compan{'y' if n == 1 else 'ies'}"
+        if args.all:
+            from sellbird.register import sqlite_query
+            rows = await sqlite_query(state.db_path)("SELECT id FROM companies ORDER BY created_at")
+            ids = list(dict.fromkeys(ids + [r["id"] for r in rows]))
+        companies = [c for c in [await state.get_company(i) for i in ids] if c is not None]
+
+        if args.sizes:
+            from sellbird.enrichment import active_providers, enrich_companies
+            if not active_providers(config, env):
+                print("\n  No enrichment provider is on with a key (enrichment.enabled, .env).\n")
+                return
+            done = await enrich_companies(state, config, env, companies, args.sizes)
+            print(f"\n  Asked about {companies_n(done['looked_up'])}; {done['sized']} now have a headcount"
+                  f" ({done['skipped_known']} already had one).\n")
+            return
+        if args.classify:
+            from sellbird.brain import Brain
+            todo = companies[:args.limit] if args.limit else companies
+            print(f"\n  Proposing a segment for up to {companies_n(len(todo))}...")
+            done = await classify(state, Brain(state, config.brain), config, todo, force=args.redo)
+            print(f"  Proposed {done['proposed']}, unclear {done['unknown']}, kept {done['kept']}"
+                  f" already set, failed {done['failed']}. Review them with `sellbird segments`.\n")
+            return
+
+        rows = []
+        for c in companies:
+            a = await company_segment(state, c.id, config)
+            size = await company_size(state, c.id, c)
+            rows.append((c, a, size))
+        print("\n  Your segments, in drafting order:\n")
+        for seg in segs:
+            mine = [r for r in rows if r[1] and r[1].key == seg.key]
+            confirmed = sum(1 for r in mine if r[1].confirmed)
+            bounds = " ".join(x for x in (
+                f"min {seg.min_employees:,}" if seg.min_employees is not None else "",
+                f"max {seg.max_employees:,}" if seg.max_employees is not None else "") if x)
+            print(f"  {seg.name:<28}{seg.status:<8}{companies_n(len(mine)):>14}, {confirmed} confirmed"
+                  + (f" · {bounds} employees" if bounds else "")
+                  + (" · not written to" if seg.status != "active" else
+                     f" · playbook {seg.playbook}" if seg.playbook else " · no playbook yet"))
+        unknown = [r for r in rows if r[1] is None or r[1].key == UNKNOWN]
+        sized = sum(1 for r in rows if r[2] is not None)
+        scope = "companies in all" if args.all else "companies with someone to write to"
+        print(f"\n  Of {len(rows)} {scope}: {len(unknown)} without a segment, {sized} with a headcount.")
+
+        review = []
+        for c, a, size in rows:
+            seg = a.segment(config) if a else None
+            flags = []
+            if a is None:
+                flags.append("no segment yet")
+            elif a.key == UNKNOWN:
+                flags.append("classifier couldn't tell")
+            elif a.source == CLASSIFIER:
+                flags.append("proposed")
+            if seg is not None and size_conflict(seg, size):
+                flags.append(size_conflict(seg, size))
+            elif seg is not None and size_doubt(seg, size):
+                flags.append(size_doubt(seg, size))
+            if flags:
+                review.append((c, a, size, flags))
+        if review:
+            print(f"\n  To review ({len(review)}):\n")
+            import textwrap
+            for c, a, size, flags in review[:args.show]:
+                seg = a.segment(config) if a else None
+                label = seg.name if seg else "-"
+                print(f"  {(c.name or c.domain)[:30]:<31}{label[:28]:<29}{(size.label() if size else '?'):<13}"
+                      f"{c.domain}")
+                note = "; ".join(flags) + (f". {a.reason}" if a and a.reason else "")
+                for line in textwrap.wrap(note, 100)[:3]:
+                    print(f"  {'':<31}{line}")
+            if len(review) > args.show:
+                print(f"\n  ...and {len(review) - args.show} more (--show N).")
+        print("\n  Confirm a proposal: sellbird segments --confirm DOMAIN [DOMAIN ...]"
+              "\n  Change one:         sellbird segments --set DOMAIN KEY [--note why]"
+              f"\n  Keys: {', '.join(s.key for s in segs)}, {UNKNOWN}")
+        if unknown:
+            print("  Propose the rest:   sellbird segments --classify")
+        if sized < len(rows):
+            print("  Headcounts:         sellbird segments --sizes N   (uses enrichment lookups)")
+        print()
+
+    asyncio.run(_segments())
 
 
 def cmd_enrich(args):
@@ -1675,6 +1857,22 @@ def main():
                      help="Add each '## vs. NAME' section as a competitor (default skills/competitive_intel.md)")
     sub.add_argument("--remove", metavar="NAME", default="", help="Remove a competitor profile")
     sub.set_defaults(func=cmd_competitors)
+
+    # sellbird segments
+    sub = subparsers.add_parser("segments", help="Which of your segments each company is; propose, confirm, size")
+    sub.add_argument("--classify", action="store_true",
+                     help="Propose a segment for companies that have none (one model call per 15)")
+    sub.add_argument("--redo", action="store_true", help="With --classify: propose again, except ones you set")
+    sub.add_argument("--limit", type=int, default=0, help="With --classify: at most this many companies")
+    sub.add_argument("--all", action="store_true",
+                     help="Every company, not just those with someone Sellbird could write to")
+    sub.add_argument("--set", nargs=2, metavar=("DOMAIN", "KEY"), help="Put a company in a segment")
+    sub.add_argument("--note", default="", help="With --set: why")
+    sub.add_argument("--confirm", nargs="+", metavar="DOMAIN", help="Accept Sellbird's proposal for these")
+    sub.add_argument("--sizes", type=int, default=0, metavar="N",
+                     help="Look up headcount for up to N companies without one (enrichment lookups)")
+    sub.add_argument("--show", type=int, default=40, help="How many to list for review (default 40)")
+    sub.set_defaults(func=cmd_segments)
 
     # sellbird gmail auth|test
     sub = subparsers.add_parser("gmail", help="Gmail provider setup")

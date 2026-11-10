@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sellbird.state import StateManager
@@ -24,7 +24,7 @@ class Analyst:
         logger.info("Analyst: Running performance analysis...")
 
         report = {
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "pipeline": await self._pipeline_summary(),
             "campaigns": await self._campaign_performance(),
             "intents": await self._intent_breakdown(),

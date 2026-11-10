@@ -906,6 +906,16 @@ class StateManager:
                 rows = await cursor.fetchall()
                 return [self._prospect_from_row(r) for r in rows]
 
+    async def get_prospects_for_company(self, company_id: str) -> list[Prospect]:
+        """Everyone Sellbird holds at one company."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM prospects WHERE company_id = ? ORDER BY created_at",
+                (company_id,),
+            ) as cursor:
+                return [self._prospect_from_row(r) for r in await cursor.fetchall()]
+
     async def set_prospect_timezone(self, prospect_id: str, zone: str):
         """Remember a recipient's time zone. Leaves updated_at alone: it
         isn't a change anyone made to the prospect."""

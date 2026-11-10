@@ -58,3 +58,5 @@ sellbird.yaml.*
 harvey.local.yaml
 harvey.local.yaml.*
 harvey.yaml.*
+# Segment playbooks (icp.segments) — product-specific
+skills/playbook_*.md
