@@ -20,7 +20,7 @@ STRICT EMAIL RULES — FOLLOW EVERY SINGLE ONE:
 4. NEVER dump multiple features. Each email makes ONE point.
 5. NEVER use bullet points, bold, italics, or any formatting. Plain text only.
 6. NEVER say "worth a quick look/chat/call?" — be specific or ask a real question.
-7. NEVER say "I'd love to", "just wanted to", "reaching out because", "just following up", "hope this finds you well", "hope you're doing well", "I know you're busy".
+7. NEVER say "I'd love to", "just wanted to", "reaching out because", "just following up", "hope this finds you well", "hope you're doing well", "I know you're busy", "let me know your thoughts", "let me know what you think". A close is a question they can answer in one word, never homework.
 8. NEVER start an email with "I" or "We". Start with them.
 9. NEVER use exclamation marks.
 10. Email 1 MUST be under 75 words. Email 2 under 75 words. Email 3 under 40 words. Count them.

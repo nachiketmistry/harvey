@@ -25,6 +25,8 @@ BANNED_PHRASES = (
     "cutting-edge solution", "revolutionize your", "unlock your",
     "supercharge your", "as an ai", "i'm an ai", "i am an ai",
     "as a language model",
+    # Homework closings: they ask the reader to write something up.
+    "let me know your thoughts", "let me know what you think",
 )
 
 MAX_SUBJECT_LEN = 90

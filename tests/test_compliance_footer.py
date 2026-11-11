@@ -949,3 +949,10 @@ def test_an_opt_out_line_has_to_say_the_emails_can_stop():
         assert ComplianceConfig(opt_out_line=good).opt_out_line == good
     # Leaving the line off is still the operator's choice.
     assert ComplianceConfig(opt_out_line="").opt_out_line == ""
+
+
+def test_the_gate_holds_a_homework_closing():
+    held = pre_send_check("jane@acme.com", "hello there", "Here is the plan. Let me know your thoughts.")
+    assert not held and any("banned phrases" in r for r in held.reasons)
+    assert pre_send_check("jane@acme.com", "hello there",
+                          "You need the renewal number by March. Does that match? Did I miss anything?")
